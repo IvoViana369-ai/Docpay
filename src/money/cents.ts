@@ -5,6 +5,9 @@
  */
 export type Cents = number;
 
+/** Centavos com sinal, usados no razão: positivo entra, negativo sai. */
+export type SignedCents = number;
+
 /** Percentual em pontos-base: 10000 = 100%, 250 = 2,5%, 1 = 0,01%. */
 export type BasisPoints = number;
 

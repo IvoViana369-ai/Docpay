@@ -4,6 +4,7 @@ import {
   isCents,
   ONE_HUNDRED_PERCENT,
 } from '../money/cents.js';
+import { isFilled } from '../shared/text.js';
 import type { SplitIssue } from './errors.js';
 import type { AccountId, SplitRule } from './types.js';
 
@@ -105,8 +106,4 @@ export function validateSplitRule(rule: SplitRule): SplitIssue[] {
   }
 
   return issues;
-}
-
-function isFilled(value: unknown): value is string {
-  return typeof value === 'string' && value.trim() !== '';
 }
