@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Segredos e chaves de provedores nunca entram no repositório.
+.env
+.env.*
+!.env.example
+secrets/

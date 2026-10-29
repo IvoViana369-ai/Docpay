@@ -1,0 +1,22 @@
+{
+  "name": "docpay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DocPay: cobrança com divisão de pagamentos (split) sobre parceiros licenciados pelo Banco Central.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
