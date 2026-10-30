@@ -1,26 +1,28 @@
 import { randomUUID } from 'node:crypto';
 import type { SignedCents } from '../money/cents.js';
-import { canonicalJson } from '../shared/canonical-json.js';
-import { LedgerError } from './errors.js';
+import {
+  deepFreeze,
+  idempotencyConflict,
+  prepareTransaction,
+  reversalKey,
+  reversalOf,
+  toSafeNumber,
+  transactionNotFound,
+} from './internal.js';
 import type {
   Ledger,
   LedgerAccountId,
-  LedgerEntry,
   LedgerTransaction,
   NewLedgerTransaction,
   StatementLine,
 } from './types.js';
-import { validateTransaction } from './validate-transaction.js';
 
 export interface InMemoryLedgerOptions {
   now?: () => Date;
   newId?: () => string;
 }
 
-/**
- * Razão em memória. É a referência das regras do razão e serve aos testes;
- * a versão em PostgreSQL vai seguir a mesma interface e as mesmas regras.
- */
+/** Razão em memória, para testes e desenvolvimento. Segue as mesmas regras do razão em PostgreSQL. */
 export class InMemoryLedger implements Ledger {
   readonly #transactions: LedgerTransaction[] = [];
   readonly #byId = new Map<string, LedgerTransaction>();
@@ -34,26 +36,12 @@ export class InMemoryLedger implements Ledger {
   }
 
   async post(input: NewLedgerTransaction): Promise<LedgerTransaction> {
-    const issues = validateTransaction(input);
-    if (issues.length > 0) {
-      throw new LedgerError(
-        'INVALID_TRANSACTION',
-        issues.map((issue) => issue.message).join(' '),
-        issues,
-      );
-    }
-
-    const entries = input.entries.map(copyEntry);
-    const metadata = { ...input.metadata };
-    const fingerprint = canonicalJson({ description: input.description, entries, metadata });
+    const { entries, metadata, fingerprint } = prepareTransaction(input);
 
     const previous = this.#byKey.get(input.idempotencyKey);
     if (previous) {
       if (previous.fingerprint === fingerprint) return previous.transaction;
-      throw new LedgerError(
-        'IDEMPOTENCY_CONFLICT',
-        `A chave ${input.idempotencyKey} já foi usada num lançamento diferente.`,
-      );
+      throw idempotencyConflict(input.idempotencyKey);
     }
 
     const transaction: LedgerTransaction = deepFreeze({
@@ -73,20 +61,11 @@ export class InMemoryLedger implements Ledger {
 
   async reverse(transactionId: string, description: string): Promise<LedgerTransaction> {
     const original = this.#byId.get(transactionId);
-    if (!original) {
-      throw new LedgerError('TRANSACTION_NOT_FOUND', `Lançamento ${transactionId} não encontrado.`);
-    }
+    if (!original) throw transactionNotFound(transactionId);
 
-    const idempotencyKey = `reversal:${original.id}`;
-    const previous = this.#byKey.get(idempotencyKey);
+    const previous = this.#byKey.get(reversalKey(original.id));
     if (previous) return previous.transaction;
-
-    return this.post({
-      idempotencyKey,
-      description,
-      entries: original.entries.map((entry) => ({ ...entry, amountCents: -entry.amountCents })),
-      metadata: { reverses: original.id },
-    });
+    return this.post(reversalOf(original, description));
   }
 
   async getTransaction(id: string): Promise<LedgerTransaction | undefined> {
@@ -123,23 +102,4 @@ export class InMemoryLedger implements Ledger {
     }
     return lines;
   }
-}
-
-function copyEntry({ account, amountCents, memo }: LedgerEntry): LedgerEntry {
-  return memo === undefined ? { account, amountCents } : { account, amountCents, memo };
-}
-
-function toSafeNumber(value: bigint): number {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
-    throw new RangeError(`Saldo fora do limite seguro: ${value}.`);
-  }
-  return Number(value);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    for (const child of Object.values(value)) deepFreeze(child);
-    Object.freeze(value);
-  }
-  return value;
 }

@@ -6,7 +6,7 @@ import { calculateSplit } from '../split/calculate-split.js';
 import { SplitError } from '../split/errors.js';
 import type { SplitResult } from '../split/types.js';
 import { ChargeError, type ChargeIssue } from './errors.js';
-import type { ChargeRepository, WebhookInbox } from './repositories.js';
+import type { ChargeRepository, PendingCursor, WebhookInbox } from './repositories.js';
 import { findDivergences, settlementTransaction } from './settlement.js';
 import type { Charge, CreateChargeInput } from './types.js';
 import { validateChargeFields } from './validate-charge.js';
@@ -18,6 +18,8 @@ export interface ChargeServiceDeps {
   webhooks: WebhookInbox;
   now?: () => Date;
   newId?: () => string;
+  /** Quantas cobranças a conciliação busca por vez. Padrão: 100. */
+  reconciliationPageSize?: number;
 }
 
 export interface SyncResult {
@@ -27,6 +29,15 @@ export interface SyncResult {
 }
 
 export type WebhookResult = SyncResult | { status: 'unknown_charge' };
+
+export interface ReconciliationReport {
+  /** Cobranças em aberto consultadas no parceiro. */
+  checked: number;
+  /** Cobranças que estavam pagas no parceiro e receberam baixa agora: o aviso delas se perdeu. */
+  settled: string[];
+  /** Cobranças que não deu para conferir, com o motivo. A próxima conciliação tenta de novo. */
+  failed: { chargeId: string; message: string }[];
+}
 
 /**
  * O caminho de uma cobrança: emissão no parceiro, aviso de pagamento e baixa
@@ -40,6 +51,7 @@ export class ChargeService {
   readonly #webhooks: WebhookInbox;
   readonly #now: () => Date;
   readonly #newId: () => string;
+  readonly #reconciliationPageSize: number;
 
   constructor(deps: ChargeServiceDeps) {
     this.#provider = deps.provider;
@@ -48,6 +60,7 @@ export class ChargeService {
     this.#webhooks = deps.webhooks;
     this.#now = deps.now ?? (() => new Date());
     this.#newId = deps.newId ?? (() => randomUUID());
+    this.#reconciliationPageSize = deps.reconciliationPageSize ?? 100;
   }
 
   /**
@@ -146,6 +159,36 @@ export class ChargeService {
     const charge = await this.#charges.findByProviderChargeId(this.#provider.name, webhook.chargeId);
     if (!charge) return { status: 'unknown_charge' };
     return this.sync(charge.id);
+  }
+
+  /**
+   * Conciliação: consulta no parceiro todas as cobranças ainda em aberto no
+   * DocPay e dá baixa nas que foram pagas, recuperando avisos que se
+   * perderam. Uma falha numa cobrança não interrompe as outras.
+   */
+  async reconcilePending(): Promise<ReconciliationReport> {
+    const report: ReconciliationReport = { checked: 0, settled: [], failed: [] };
+    let after: PendingCursor | undefined;
+
+    for (;;) {
+      const page = await this.#charges.findPending({ limit: this.#reconciliationPageSize, after });
+      for (const charge of page) {
+        report.checked += 1;
+        try {
+          const result = await this.sync(charge.id);
+          if (result.status === 'settled') report.settled.push(charge.id);
+        } catch (error) {
+          report.failed.push({
+            chargeId: charge.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const last = page.at(-1);
+      if (!last || page.length < this.#reconciliationPageSize) return report;
+      after = { createdAt: last.createdAt, id: last.id };
+    }
   }
 
   /** Confere tudo de uma vez e devolve a divisão; lança ChargeError com todos os problemas. */

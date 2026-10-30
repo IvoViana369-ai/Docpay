@@ -1,5 +1,11 @@
 import type { Charge } from './types.js';
 
+/** Posição numa lista de cobranças em aberto: a última cobrança da página anterior. */
+export interface PendingCursor {
+  createdAt: string;
+  id: string;
+}
+
 export interface ChargeRepository {
   /** Grava uma cobrança nova. Devolve false se já existe uma com a mesma chave de idempotência. */
   insert(charge: Charge): Promise<boolean>;
@@ -7,6 +13,11 @@ export interface ChargeRepository {
   findById(id: string): Promise<Charge | undefined>;
   findByIdempotencyKey(idempotencyKey: string): Promise<Charge | undefined>;
   findByProviderChargeId(provider: string, providerChargeId: string): Promise<Charge | undefined>;
+  /**
+   * Cobranças em aberto, das mais antigas para as mais novas. Para a próxima
+   * página, passe em `after` a última cobrança da página anterior.
+   */
+  findPending(options: { limit: number; after?: PendingCursor }): Promise<Charge[]>;
 }
 
 export interface ReceivedWebhook {
@@ -18,6 +29,8 @@ export interface ReceivedWebhook {
 /** Guarda cada aviso recebido do jeito que chegou, para auditoria e reprocessamento. */
 export interface WebhookInbox {
   save(webhook: ReceivedWebhook): Promise<void>;
+  /** Avisos mais recentes primeiro. */
+  recent(limit: number): Promise<ReceivedWebhook[]>;
 }
 
 /** Cobranças em memória. Guarda e devolve cópias, como um banco de dados faria. */
@@ -50,6 +63,14 @@ export class InMemoryChargeRepository implements ChargeRepository {
     );
   }
 
+  async findPending({ limit, after }: { limit: number; after?: PendingCursor }): Promise<Charge[]> {
+    return [...this.#charges.values()]
+      .filter((charge) => charge.status === 'pending' && (!after || comesAfter(charge, after)))
+      .sort((a, b) => (comesAfter(a, b) ? 1 : comesAfter(b, a) ? -1 : 0))
+      .slice(0, limit)
+      .map((charge) => structuredClone(charge));
+  }
+
   #find(predicate: (charge: Charge) => boolean): Charge | undefined {
     return [...this.#charges.values()].find(predicate);
   }
@@ -59,6 +80,14 @@ export class InMemoryChargeRepository implements ChargeRepository {
   }
 }
 
+/** Ordem das cobranças em aberto: data de criação e, no empate, o id. */
+function comesAfter(charge: PendingCursor, cursor: PendingCursor): boolean {
+  return (
+    charge.createdAt > cursor.createdAt ||
+    (charge.createdAt === cursor.createdAt && charge.id > cursor.id)
+  );
+}
+
 export class InMemoryWebhookInbox implements WebhookInbox {
   readonly #webhooks: ReceivedWebhook[] = [];
 
@@ -66,8 +95,10 @@ export class InMemoryWebhookInbox implements WebhookInbox {
     this.#webhooks.push({ ...webhook });
   }
 
-  /** Avisos guardados, na ordem em que chegaram. */
-  all(): ReceivedWebhook[] {
-    return this.#webhooks.map((webhook) => ({ ...webhook }));
+  async recent(limit: number): Promise<ReceivedWebhook[]> {
+    return [...this.#webhooks]
+      .reverse()
+      .slice(0, limit)
+      .map((webhook) => ({ ...webhook }));
   }
 }
