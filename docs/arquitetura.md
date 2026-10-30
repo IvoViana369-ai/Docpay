@@ -16,8 +16,9 @@ O DocPay **não** é instituição de pagamento. O dinheiro entra, é dividido e
 | Regra de divisão | Quanto cada conta recebe: percentual, valor fixo ou os dois. | `src/split` |
 | Parceiro | Adaptador para um parceiro. Todos seguem a mesma interface. Hoje só existe o simulado. | `src/providers` |
 | Razão | Contabilidade interna em partidas dobradas. Nada é apagado. | `src/ledger` |
-| Caixa de avisos | Guarda cada aviso (webhook) do parceiro do jeito que chegou. | `src/charges/repositories.ts` |
-| Conciliação | Compara, todo dia, o que o parceiro diz com o que o razão registrou. | a fazer |
+| Caixa de avisos | Guarda cada aviso (webhook) do parceiro do jeito que chegou. | `src/charges` |
+| Conciliação | Consulta no parceiro as cobranças em aberto e dá baixa nas que foram pagas. | `ChargeService.reconcilePending` |
+| Banco de dados | PostgreSQL. As regras do razão e das cobranças também são garantidas pelo banco. | `src/db`, `migrations/` |
 
 ## Caminho de uma cobrança
 
@@ -28,7 +29,7 @@ O DocPay **não** é instituição de pagamento. O dinheiro entra, é dividido e
 5. O pagador paga. O parceiro divide o dinheiro entre as subcontas e manda um aviso.
 6. O DocPay guarda o aviso bruto, **consulta a cobrança no parceiro** (o aviso pode ser falso) e, se ela foi paga, lança a baixa no razão.
 7. A fazer: o DocPay avisa o DocLine, que dá baixa no título dele.
-8. A fazer: todo dia, a conciliação consulta as cobranças em aberto e compara os saldos.
+8. Todo dia, a conciliação consulta no parceiro as cobranças ainda em aberto e dá baixa nas que foram pagas, caso o aviso tenha se perdido. Falta agendar a execução diária, o que vem junto com a API.
 
 Repetir qualquer passo não duplica nada. A emissão usa a chave de idempotência, e a baixa usa a chave `settlement:<id da cobrança>` no razão. Se a resposta do parceiro se perder na emissão, basta repetir o pedido com a mesma chave: o parceiro devolve a cobrança que já tinha criado.
 
@@ -75,7 +76,22 @@ Baixa da cobrança do exemplo:
 
 O beneficiário recebe o valor inteiro e repassa a parte do destinatário. Assim o extrato dele mostra o que de fato aconteceu: ele cobrou R$ 1.000,00 e repassou R$ 400,00.
 
-Hoje o razão roda em memória (`InMemoryLedger`). A versão em PostgreSQL vai seguir a mesma interface e as mesmas regras, com o banco garantindo soma zero, imutabilidade e chave única.
+O razão tem duas versões com a mesma interface e os mesmos testes: `PostgresLedger`, para produção, e `InMemoryLedger`, para testes rápidos.
+
+## Banco de dados (`src/db`, `migrations/`)
+
+O DocPay usa PostgreSQL. O código confere tudo antes de gravar, e o banco garante as regras de novo, para que um bug ou um comando manual não consiga quebrá-las:
+
+- as partidas de cada lançamento somam zero e movimentam pelo menos duas contas, conferido no fim da transação;
+- nada no razão pode ser alterado nem apagado;
+- cobrança não é apagada, não muda de identidade e, depois de paga, não volta a ficar em aberto;
+- as colunas da cobrança batem com o documento guardado nela.
+
+**Migrações.** Ficam em `migrations/`, uma por arquivo, e são aplicadas em ordem por `migrate()`, numa transação só e com trava (se duas instâncias subirem juntas, uma espera a outra). Migração já aplicada nunca é editada: toda mudança é uma migração nova. A pasta `migrations/` precisa ir junto com o código para o servidor.
+
+**Testes.** Por padrão, os testes usam o PGlite, um PostgreSQL de verdade que roda dentro do processo, sem instalar nada. Com a variável `DATABASE_URL`, usam o servidor indicado. O CI roda dos dois jeitos. Cada teste ganha um schema próprio e vazio.
+
+**Driver.** O código fala com o banco por uma interface mínima (`Db`). Em produção, o adaptador é o do node-postgres (`nodePostgresDb`).
 
 ## Parceiro simulado (`src/providers/simulated-provider.ts`)
 
@@ -98,9 +114,11 @@ O método `pay` existe só no simulador: paga a cobrança como se fosse o pagado
 - **Receita do DocPay.** Mensalidade (caminho seguro) ou parte da cobrança (depende de parecer jurídico sobre a Resolução Conjunta 16/2025).
 - **Plano de contas.** As contas do razão acima são uma proposta e precisam ser validadas pelo contador.
 - **Mais de um sistema usando o DocPay.** Quando entrar um segundo sistema além do DocLine, as chaves de idempotência precisam levar o nome do sistema na frente, para não colidir.
+- **Cobranças vencidas.** Hoje uma cobrança que nunca é paga fica em aberto para sempre, e a conciliação continua a consultá-la. Falta o status de vencida ou cancelada, e a regra de quando aplicá-lo.
+- **Saldos.** A conciliação ainda não compara o saldo de cada conta no razão com o saldo no parceiro. Isso depende de registrar os saques das subcontas.
 
 ## Tecnologia
 
 - TypeScript com Node.js 22, sem framework por enquanto.
-- PostgreSQL para o razão e as cobranças, no próximo passo.
+- PostgreSQL, com o driver node-postgres. Nos testes, PGlite.
 - Testes com Vitest. As regras de dinheiro também têm testes de propriedade (fast-check), que geram centenas de casos aleatórios.

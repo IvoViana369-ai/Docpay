@@ -27,11 +27,14 @@ Leia `docs/arquitetura.md` antes de mudar o fluxo de cobrança, o razão ou o mo
 - TypeScript estrito, ESM. Imports relativos com a extensão `.js`.
 - Testes ao lado do código (`*.test.ts`). Regras de dinheiro também têm testes de propriedade com fast-check.
 - Interfaces de armazenamento e de parceiro são assíncronas, mesmo nas versões em memória.
+- Toda implementação de armazenamento (em memória e PostgreSQL) roda os mesmos testes, com `describe.each`. Testes de banco usam `createTestDatabase()`, que dá a cada teste um schema vazio.
+- **Migração já aplicada nunca é editada.** Toda mudança no banco é um arquivo novo em `migrations/`, com o número seguinte.
+- Regras de dinheiro e de estado ficam também no banco (gatilhos e restrições), não só no código.
 - Use só chaves de sandbox. Nunca leia `.env` nem a pasta `secrets/`.
 - Mudanças em `src/split`, `src/ledger` e no tratamento de avisos precisam de revisão humana antes do merge.
 
 ## Comandos
 
 - `npm run check`: checagem de tipos e testes. Rode antes de cada commit.
-- `npm test`: só os testes.
+- `npm test`: só os testes. Usam o PGlite; com `DATABASE_URL`, usam esse servidor PostgreSQL.
 - `npm run typecheck`: só a checagem de tipos.
