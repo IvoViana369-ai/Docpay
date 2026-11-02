@@ -51,7 +51,9 @@ export async function createRuntime(config: ServerConfig): Promise<Runtime> {
     });
   } else {
     // O simulado guarda as cobranças em memória: só serve para teste, e elas somem ao reiniciar.
-    simulator = new SimulatedProvider();
+    // A numeração parte do relógio (em milissegundos) para que, depois de reiniciar, o simulador
+    // não repita o número de uma cobrança que já está no banco.
+    simulator = new SimulatedProvider({ firstChargeNumber: Date.now() });
     provider = simulator;
   }
 

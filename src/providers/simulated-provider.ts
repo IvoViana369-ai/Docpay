@@ -19,8 +19,15 @@ export interface SimulatedProviderOptions {
   fees?: Readonly<Record<PaymentMethod, Cents>>;
   /** Se definida, o aviso só é aceito com esta chave no parâmetro `k`, como na Safe2Pay. */
   webhookKey?: string;
+  /**
+   * Número da primeira cobrança. Padrão: 9000000001. Os números têm só
+   * dígitos, como os da Safe2Pay, porque o DocLine confere isso.
+   */
+  firstChargeNumber?: number;
   now?: () => Date;
 }
+
+const DEFAULT_FIRST_CHARGE_NUMBER = 9_000_000_001;
 
 export interface SimulatedPayment {
   /** Padrão: o meio da cobrança. O boleto também pode ser pago pelo QR do Pix. */
@@ -52,6 +59,7 @@ export class SimulatedProvider implements PaymentProvider {
   readonly name = 'simulated';
   readonly #fees: Readonly<Record<PaymentMethod, Cents>>;
   readonly #webhookKey: string | undefined;
+  readonly #firstChargeNumber: number;
   readonly #now: () => Date;
   readonly #charges = new Map<string, StoredCharge>();
   readonly #keys = new Map<string, { fingerprint: string; chargeId: string }>();
@@ -59,8 +67,13 @@ export class SimulatedProvider implements PaymentProvider {
   #webhookCount = 0;
 
   constructor(options: SimulatedProviderOptions = {}) {
+    const firstChargeNumber = options.firstChargeNumber ?? DEFAULT_FIRST_CHARGE_NUMBER;
+    if (!Number.isSafeInteger(firstChargeNumber) || firstChargeNumber < 1) {
+      throw new RangeError(`Número da primeira cobrança inválido (${String(firstChargeNumber)}).`);
+    }
     this.#fees = options.fees ?? { boleto: 299, pix: 240 };
     this.#webhookKey = options.webhookKey;
+    this.#firstChargeNumber = firstChargeNumber;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -81,7 +94,7 @@ export class SimulatedProvider implements PaymentProvider {
     this.#validate(request);
 
     this.#chargeCount += 1;
-    const id = `sim_ch_${String(this.#chargeCount).padStart(6, '0')}`;
+    const id = String(this.#firstChargeNumber + this.#chargeCount - 1);
     const pixCopyPaste = `SIMULADO-PIX-${id}`;
     const charge: ProviderCharge =
       request.method === 'boleto'

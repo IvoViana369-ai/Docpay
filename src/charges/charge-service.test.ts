@@ -158,10 +158,10 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
         status: 'pending',
         amountCents: 100_000,
         provider: 'simulated',
-        providerChargeId: 'sim_ch_000001',
+        providerChargeId: '9000000001',
         providerStatus: { code: 'pending', label: 'Pendente' },
-        paymentUrl: 'https://simulado.docpay.invalid/boleto/sim_ch_000001',
-        pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
+        paymentUrl: 'https://simulado.docpay.invalid/boleto/9000000001',
+        pixCopyPaste: 'SIMULADO-PIX-9000000001',
         divergences: [],
         createdAt: NOW,
       });
@@ -189,7 +189,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
         payer: payerWithoutAddress,
       });
 
-      expect(charge).toMatchObject({ method: 'pix', reference: 'DOCLINE-123', pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001' });
+      expect(charge).toMatchObject({ method: 'pix', reference: 'DOCLINE-123', pixCopyPaste: 'SIMULADO-PIX-9000000001' });
       expect(charge.digitableLine).toBeUndefined();
       expect(provider.requestFor(charge.providerChargeId).reference).toBe('DOCLINE-123');
     });
@@ -221,7 +221,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
 
       expect(again).toEqual(first);
       await expect(
-        provider.getCharge({ id: 'sim_ch_000002', method: 'boleto', amountCents: 1, transfers: [] }),
+        provider.getCharge({ id: '9000000002', method: 'boleto', amountCents: 1, transfers: [] }),
       ).rejects.toThrow(ProviderError);
     });
 
@@ -468,9 +468,9 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
 
     it('ignora aviso de cobrança que o DocPay não emitiu', async () => {
       const { service } = await setup();
-      const unknown = JSON.stringify({ id: 'evt_1', chargeId: 'sim_ch_999999' });
+      const unknown = JSON.stringify({ id: 'evt_1', chargeId: '9999999999' });
       expect(await service.handleWebhook(webhookOf(unknown))).toEqual([
-        { providerChargeId: 'sim_ch_999999', status: 'unknown_charge' },
+        { providerChargeId: '9999999999', status: 'unknown_charge' },
       ]);
     });
 

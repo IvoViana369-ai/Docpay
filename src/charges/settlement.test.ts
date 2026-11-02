@@ -19,10 +19,10 @@ function chargeFixture(): Charge {
       { account: 'parceiro', role: 'recipient', grossCents: 40_000, feeCents: 0, netCents: 40_000 },
     ],
     provider: 'simulated',
-    providerChargeId: 'sim_ch_000001',
+    providerChargeId: '9000000001',
     providerStatus: { code: 'pending', label: 'Pendente' },
     digitableLine: '999',
-    pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
+    pixCopyPaste: 'SIMULADO-PIX-9000000001',
     divergences: [],
     createdAt: '2026-10-29T12:00:00.000Z',
   };
@@ -53,7 +53,7 @@ describe('settlementTransaction', () => {
     expect(transaction.metadata).toEqual({
       chargeId: 'ch_1',
       provider: 'simulated',
-      providerChargeId: 'sim_ch_000001',
+      providerChargeId: '9000000001',
       method: 'pix',
       paidAt: '2026-11-05T15:00:00.000Z',
     });

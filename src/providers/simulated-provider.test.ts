@@ -43,12 +43,12 @@ describe('SimulatedProvider', () => {
     const charge = await new SimulatedProvider().createCharge(request);
 
     expect(charge).toEqual({
-      id: 'sim_ch_000001',
+      id: '9000000001',
       status: 'pending',
       providerStatus: { code: 'pending', label: 'Pendente' },
-      paymentUrl: 'https://simulado.docpay.invalid/boleto/sim_ch_000001',
+      paymentUrl: 'https://simulado.docpay.invalid/boleto/9000000001',
       digitableLine: expect.stringMatching(/^999\d{44}$/),
-      pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
+      pixCopyPaste: 'SIMULADO-PIX-9000000001',
     });
   });
 
@@ -56,11 +56,22 @@ describe('SimulatedProvider', () => {
     const charge = await new SimulatedProvider().createCharge({ ...request, method: 'pix' });
 
     expect(charge).toEqual({
-      id: 'sim_ch_000001',
+      id: '9000000001',
       status: 'pending',
       providerStatus: { code: 'pending', label: 'Pendente' },
-      pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
+      pixCopyPaste: 'SIMULADO-PIX-9000000001',
     });
+  });
+
+  it('numera as cobranças só com dígitos, a partir do número configurado', async () => {
+    const provider = new SimulatedProvider({ firstChargeNumber: 1_793_000_000_000 });
+    const first = await provider.createCharge(request);
+    const second = await provider.createCharge({ ...request, idempotencyKey: 'cobranca-2' });
+
+    expect([first.id, second.id]).toEqual(['1793000000000', '1793000000001']);
+    for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => new SimulatedProvider({ firstChargeNumber: invalid })).toThrow(RangeError);
+    }
   });
 
   it('guarda o pedido, para os testes conferirem os repasses', async () => {
@@ -76,7 +87,7 @@ describe('SimulatedProvider', () => {
     const again = await provider.createCharge({ ...request, payer: { ...request.payer } });
 
     expect(again).toEqual(first);
-    expect(await rejectionCode(provider.getCharge(ref('sim_ch_000002')))).toBe('CHARGE_NOT_FOUND');
+    expect(await rejectionCode(provider.getCharge(ref('9000000002')))).toBe('CHARGE_NOT_FOUND');
   });
 
   it('recusa a mesma chave com outro pedido', async () => {
@@ -179,7 +190,7 @@ describe('SimulatedProvider', () => {
     expect(errorCode(() => provider.pay(id, { paidAmountCents: 40_100 }))).toBe('INVALID_REQUEST');
     provider.pay(id);
     expect(errorCode(() => provider.pay(id))).toBe('ALREADY_PAID');
-    expect(errorCode(() => provider.pay('sim_ch_999999'))).toBe('CHARGE_NOT_FOUND');
+    expect(errorCode(() => provider.pay('9999999999'))).toBe('CHARGE_NOT_FOUND');
   });
 
   it('devolve cópias: mudar o que voltou não muda a cobrança no parceiro', async () => {
