@@ -65,6 +65,8 @@ Todas as rotas `/v1`, menos a do aviso do parceiro, exigem `Authorization: Beare
 | `POST /v1/providers/:parceiro/webhook` | Aviso do parceiro. A Safe2Pay manda com a chave no parâmetro `k` |
 | `POST /v1/simulator/charges/:id/pay` | Só com o parceiro simulado: paga a cobrança de teste |
 
+A cobrança traz `sandbox: true` quando foi emitida no parceiro simulado ou no ambiente de teste do parceiro. O sistema cliente usa essa marca, e não a própria configuração, para saber se a cobrança é de teste.
+
 Respostas de erro: `400` (formato errado), `401` (chave), `404`, `409` (chave repetida com outro conteúdo, ou cobrança sendo gerada: `IN_PROGRESS`), `422` (cada problema com o campo e a explicação, ou recusa do parceiro com o código dele) e `502` (o parceiro não respondeu).
 
 ### Aviso ao sistema cliente

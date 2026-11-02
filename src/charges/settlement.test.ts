@@ -19,6 +19,7 @@ function chargeFixture(): Charge {
       { account: 'parceiro', role: 'recipient', grossCents: 40_000, feeCents: 0, netCents: 40_000 },
     ],
     provider: 'simulated',
+    sandbox: true,
     providerChargeId: '9000000001',
     providerStatus: { code: 'pending', label: 'Pendente' },
     digitableLine: '999',

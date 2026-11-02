@@ -60,6 +60,11 @@ export interface Charge {
   /** Divisão prevista na emissão, antes da tarifa. */
   expectedShares: SplitShare[];
   provider: string;
+  /**
+   * Cobrança de teste, emitida no parceiro simulado ou no ambiente de teste do
+   * parceiro: não deve ser paga nem mandada a um cliente de verdade.
+   */
+  sandbox: boolean;
   providerChargeId: string;
   /** O status como o parceiro informou na última consulta. */
   providerStatus: ProviderStatus;

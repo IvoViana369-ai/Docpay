@@ -107,7 +107,13 @@ describe('API do DocPay', () => {
       const first = await app.inject({ method: 'POST', url: '/v1/charges', headers: auth, payload: input });
       expect(first.statusCode).toBe(200);
       const charge = first.json<Charge>();
-      expect(charge).toMatchObject({ reference: 'DOCLINE-13', method: 'boleto', status: 'pending', provider: 'simulated' });
+      expect(charge).toMatchObject({
+        reference: 'DOCLINE-13',
+        method: 'boleto',
+        status: 'pending',
+        provider: 'simulated',
+        sandbox: true,
+      });
 
       const again = await app.inject({ method: 'POST', url: '/v1/charges', headers: auth, payload: input });
       expect(again.json<Charge>().id).toBe(charge.id);

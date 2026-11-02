@@ -214,6 +214,8 @@ describe('Safe2PayProvider', () => {
       const safe2pay = fakeSafe2Pay(json({ HasError: false, ResponseDetail: { IdTransaction: 11, Status: 1 } }));
       const s2p = provider(safe2pay.fetch, { sandbox: true });
 
+      expect(s2p.sandbox).toBe(true);
+      expect(provider(safe2pay.fetch).sandbox).toBe(false);
       await s2p.createCharge(boleto);
       expect((safe2pay.calls[0]?.body as Record<string, unknown>).IsSandbox).toBe(true);
 

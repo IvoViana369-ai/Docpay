@@ -98,12 +98,14 @@ type Detail = Record<string, unknown>;
 
 export class Safe2PayProvider implements PaymentProvider {
   readonly name = 'safe2pay';
+  readonly sandbox: boolean;
   readonly #options: Safe2PayOptions;
   readonly #fetch: typeof fetch;
   readonly #now: () => Date;
   readonly #timeZone: string;
 
   constructor(options: Safe2PayOptions) {
+    this.sandbox = options.sandbox;
     this.#options = options;
     this.#fetch = options.fetch ?? fetch;
     this.#now = options.now ?? (() => new Date());

@@ -145,6 +145,7 @@ export class ChargeService {
       rule: structuredClone(input.rule),
       expectedShares: split.shares,
       provider: this.#provider.name,
+      sandbox: this.#provider.sandbox,
       providerChargeId: remote.id,
       providerStatus: remote.providerStatus,
       divergences: [],

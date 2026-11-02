@@ -5,7 +5,7 @@ import { InMemoryLedger } from '../ledger/in-memory-ledger.js';
 import { PostgresLedger } from '../ledger/postgres-ledger.js';
 import type { Ledger } from '../ledger/types.js';
 import { ProviderError } from '../providers/errors.js';
-import { SimulatedProvider } from '../providers/simulated-provider.js';
+import { SimulatedProvider, type SimulatedProviderOptions } from '../providers/simulated-provider.js';
 import type { ProviderCharge, ProviderChargeRef, ProviderChargeRequest } from '../providers/types.js';
 import { ChargeService, chargeRequestFingerprint } from './charge-service.js';
 import { InMemoryChargeClaims, PostgresChargeClaims, type ChargeClaims } from './claims.js';
@@ -62,10 +62,17 @@ beforeAll(() => warmUpTestDatabase(), 60_000);
 
 /** Parceiro simulado que fica fora do ar quando o teste manda. */
 class UnstableProvider extends SimulatedProvider {
+  /** Imita também um parceiro de produção, para conferir a marca de teste das cobranças. */
+  override readonly sandbox: boolean;
   readonly offlineFor = new Set<string>();
   /** Erro da próxima criação de cobrança, como uma queda de rede. */
   failNextCreate: Error | undefined;
   createCalls = 0;
+
+  constructor(options: SimulatedProviderOptions & { sandbox?: boolean } = {}) {
+    super(options);
+    this.sandbox = options.sandbox ?? true;
+  }
 
   override async createCharge(request: ProviderChargeRequest): Promise<ProviderCharge> {
     this.createCalls += 1;
@@ -121,10 +128,13 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
     for (const close of opened.splice(0)) await close();
   });
 
-  async function setup(options: { reconciliationPageSize?: number; notifier?: Notifier } = {}) {
+  async function setup({
+    sandbox,
+    ...options
+  }: { reconciliationPageSize?: number; notifier?: Notifier; sandbox?: boolean } = {}) {
     const stores = await storage.create();
     opened.push(() => stores.close());
-    const provider = new UnstableProvider({ now });
+    const provider = new UnstableProvider({ now, ...(sandbox === undefined ? {} : { sandbox }) });
     let count = 0;
     const service = new ChargeService({
       provider,
@@ -158,6 +168,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
         status: 'pending',
         amountCents: 100_000,
         provider: 'simulated',
+        sandbox: true,
         providerChargeId: '9000000001',
         providerStatus: { code: 'pending', label: 'Pendente' },
         paymentUrl: 'https://simulado.docpay.invalid/boleto/9000000001',
@@ -192,6 +203,14 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       expect(charge).toMatchObject({ method: 'pix', reference: 'DOCLINE-123', pixCopyPaste: 'SIMULADO-PIX-9000000001' });
       expect(charge.digitableLine).toBeUndefined();
       expect(provider.requestFor(charge.providerChargeId).reference).toBe('DOCLINE-123');
+    });
+
+    it('marca a cobrança como de teste conforme o ambiente do parceiro na emissão', async () => {
+      const { service } = await setup({ sandbox: false });
+      const charge = await service.create(input);
+
+      expect(charge.sandbox).toBe(false);
+      expect((await service.get(charge.id))?.sandbox).toBe(false);
     });
 
     it('não manda ao parceiro repasse de valor zero', async () => {

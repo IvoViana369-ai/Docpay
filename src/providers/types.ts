@@ -110,6 +110,8 @@ export interface ProviderWebhook {
 /** O que o DocPay precisa de um parceiro. Cada parceiro tem um adaptador com esta interface. */
 export interface PaymentProvider {
   readonly name: string;
+  /** Ambiente de teste (o parceiro simulado ou o sandbox do parceiro): nada ali é dinheiro de verdade. */
+  readonly sandbox: boolean;
   createCharge(request: ProviderChargeRequest): Promise<ProviderCharge>;
   getCharge(ref: ProviderChargeRef): Promise<ProviderCharge>;
   /**

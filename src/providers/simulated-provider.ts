@@ -57,6 +57,7 @@ interface StoredCharge {
  */
 export class SimulatedProvider implements PaymentProvider {
   readonly name = 'simulated';
+  readonly sandbox: boolean = true;
   readonly #fees: Readonly<Record<PaymentMethod, Cents>>;
   readonly #webhookKey: string | undefined;
   readonly #firstChargeNumber: number;
