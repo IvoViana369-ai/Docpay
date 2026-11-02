@@ -86,6 +86,12 @@ describe('readConfig', () => {
     ]);
   });
 
+  it('a conciliação (cron) não exige a chave da API', () => {
+    const { DOCPAY_API_KEY: _key, ...withoutKey } = base;
+    expect(readConfig(withoutKey, { requireApiKey: false }).ok).toBe(true);
+    expect(readConfig(withoutKey).ok).toBe(false);
+  });
+
   it('recusa parceiro desconhecido', () => {
     expect(readConfig({ ...base, DOCPAY_PROVIDER: 'iugu' })).toEqual({
       ok: false,

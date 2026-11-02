@@ -31,7 +31,10 @@ export type ConfigResult = { ok: true; config: ServerConfig } | { ok: false; pro
  * Lê a configuração das variáveis de ambiente (no Render, em Environment).
  * Devolve todos os problemas de uma vez, para o log dizer tudo o que falta.
  */
-export function readConfig(env: Readonly<Record<string, string | undefined>>): ConfigResult {
+export function readConfig(
+  env: Readonly<Record<string, string | undefined>>,
+  options: { requireApiKey?: boolean } = {},
+): ConfigResult {
   const problems: string[] = [];
   const get = (name: string): string | undefined => env[name]?.trim() || undefined;
   const required = (name: string, what: string): string => {
@@ -54,7 +57,11 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
   };
 
   const databaseUrl = required('DATABASE_URL', 'o endereço do banco PostgreSQL.');
-  const apiKey = secret('DOCPAY_API_KEY', 'a chave que o DocLine usa para chamar o DocPay (pelo menos 32 caracteres).');
+  // A conciliação (cron) não recebe chamadas: não precisa da chave da API.
+  const apiKey =
+    options.requireApiKey === false
+      ? (get('DOCPAY_API_KEY') ?? '')
+      : secret('DOCPAY_API_KEY', 'a chave que o DocLine usa para chamar o DocPay (pelo menos 32 caracteres).');
 
   const port = Number(get('PORT') ?? 3000);
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) problems.push('PORT: número de porta inválido.');

@@ -1,0 +1,88 @@
+# DocPay no Render: a API, o banco e a conciliação.
+# Chaves e segredos vão só no painel do Render (sync: false), nunca no
+# repositório nem no chat. Passo a passo em docs/RENDER.md.
+
+databases:
+  - name: docpay-db
+    databaseName: docpay
+    user: docpay
+
+services:
+  - type: web
+    name: docpay
+    runtime: node
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: docpay-db
+          property: connectionString
+      # A chave que o DocLine usa para chamar o DocPay (pelo menos 32 caracteres).
+      - key: DOCPAY_API_KEY
+        sync: false
+      # O endereço deste serviço no Render (https://...onrender.com), para a Safe2Pay mandar o aviso.
+      - key: DOCPAY_PUBLIC_URL
+        sync: false
+      - key: DOCPAY_TIMEZONE
+        value: America/Fortaleza
+      # Onde o DocPay avisa quando uma cobrança muda de status (o endereço no DocLine) e o segredo combinado.
+      - key: DOCPAY_NOTIFY_URL
+        sync: false
+      - key: DOCPAY_NOTIFY_SECRET
+        sync: false
+      # "simulated" (teste, sem dinheiro) ou "safe2pay".
+      - key: DOCPAY_PROVIDER
+        value: simulated
+      - key: SAFE2PAY_API_KEY
+        sync: false
+      # 1 = ambiente de teste da Safe2Pay; 0 = produção.
+      - key: SAFE2PAY_SANDBOX
+        value: "1"
+      # A conta do DocPay dona do token da Safe2Pay.
+      - key: SAFE2PAY_MAIN_ACCOUNT
+        value: docline
+      # Tarifas do contrato: centavos ("100"), percentual ("0,99%") ou os dois ("100+0,99%").
+      - key: SAFE2PAY_FEE_BOLETO
+        sync: false
+      - key: SAFE2PAY_FEE_PIX
+        sync: false
+
+  - type: cron
+    name: docpay-conciliacao
+    runtime: node
+    # A cada 30 minutos: confere as cobranças em aberto e manda os avisos que ficaram para trás.
+    schedule: "*/30 * * * *"
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run reconcile
+    # Os mesmos valores do serviço web (menos a DOCPAY_API_KEY, que a conciliação não usa).
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: docpay-db
+          property: connectionString
+      - key: DOCPAY_PUBLIC_URL
+        sync: false
+      - key: DOCPAY_TIMEZONE
+        value: America/Fortaleza
+      - key: DOCPAY_NOTIFY_URL
+        sync: false
+      - key: DOCPAY_NOTIFY_SECRET
+        sync: false
+      - key: DOCPAY_PROVIDER
+        value: simulated
+      - key: SAFE2PAY_API_KEY
+        sync: false
+      - key: SAFE2PAY_SANDBOX
+        value: "1"
+      - key: SAFE2PAY_MAIN_ACCOUNT
+        value: docline
+      - key: SAFE2PAY_FEE_BOLETO
+        sync: false
+      - key: SAFE2PAY_FEE_PIX
+        sync: false

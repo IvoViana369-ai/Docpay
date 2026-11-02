@@ -6,7 +6,7 @@
 import { readConfig } from './config.js';
 import { createRuntime } from './runtime.js';
 
-const result = readConfig(process.env);
+const result = readConfig(process.env, { requireApiKey: false });
 if (!result.ok) {
   console.error(`A conciliação não pode rodar. Falta configurar:\n${result.problems.map((problem) => `- ${problem}`).join('\n')}`);
   process.exit(1);

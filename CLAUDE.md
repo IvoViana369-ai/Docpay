@@ -13,11 +13,13 @@ Leia `docs/arquitetura.md` antes de mudar o fluxo de cobrança, o razão ou o mo
 - **Arredondamento:** percentuais arredondam para baixo, e o que sobra fica com o beneficiário. Rateios usam o maior resto; no empate, ganha quem vem primeiro.
 - **Razão em partidas dobradas e imutável.** Todo lançamento soma zero. Nada é alterado nem apagado: correção é um lançamento novo (estorno).
 - **Idempotência em tudo que move dinheiro.** Emissão de cobrança, lançamento no razão e baixa levam chave de idempotência. Repetir a mesma chamada não pode duplicar nada.
-- **Aviso (webhook) não dá baixa sozinho.** Guarde o aviso bruto, consulte a cobrança no parceiro e só então lance no razão.
+- **Aviso (webhook) não dá baixa sozinho.** Guarde o aviso bruto, consulte a cobrança no parceiro e só então lance no razão. O mesmo vale para o sistema cliente: o aviso do DocPay é assinado, e o cliente consulta a cobrança antes de agir.
+- **Reserva da chave antes de chamar o parceiro.** A Safe2Pay não reconhece chave de idempotência: a emissão reserva a chave (`charge_claims`) e confere de novo se a cobrança existe antes de chamar o parceiro.
+- **Nenhuma chave no log.** Nem a `DOCPAY_API_KEY`, nem tokens de parceiro, nem o parâmetro `k` do aviso.
 
 ## Armadilhas dos parceiros
 
-- Safe2Pay: responde HTTP 200 mesmo com erro (veja o campo `HasError`). O webhook não tem assinatura HMAC e é reenviado até 5 vezes, com 5 h de intervalo. No split, a soma tem de fechar exatamente o valor, senão a transação é recusada.
+- Safe2Pay: responde HTTP 200 mesmo com erro (veja o campo `HasError`). O webhook não tem assinatura HMAC e é reenviado até 5 vezes, com 5 h de intervalo. No split, a soma tem de fechar exatamente o valor, senão a transação é recusada. Não reconhece chave de idempotência. O ambiente de teste não gera Pix. Só subcontas ligadas ao Marketplace da conta principal entram na divisão (recusa 207). A consulta não traz tarifa nem repasses: vêm da tarifa do contrato e da cobrança. O adaptador (`src/providers/safe2pay`) porta o que o DocLine validou em produção; o site da Safe2Pay não é acessível deste ambiente.
 - iugu: subcontas só podem ser criadas em produção, exigem assinatura RSA e não podem ser excluídas. O webhook chega em form-urlencoded, sem HMAC, vindo de um IP fixo. Se os splits somarem 100%, a iugu ignora o split.
 - Asaas: calcula o split sobre o valor líquido (depois da tarifa) e bloqueia o valor por 2 dias úteis quando há divergência.
 
@@ -38,3 +40,5 @@ Leia `docs/arquitetura.md` antes de mudar o fluxo de cobrança, o razão ou o mo
 - `npm run check`: checagem de tipos e testes. Rode antes de cada commit.
 - `npm test`: só os testes. Usam o PGlite; com `DATABASE_URL`, usam esse servidor PostgreSQL.
 - `npm run typecheck`: só a checagem de tipos.
+- `npm run build`: compila para `dist/` (o que o Render faz).
+- `npm start` e `npm run reconcile`: a API e a conciliação, configuradas pelas variáveis de ambiente (ver `docs/RENDER.md`).
