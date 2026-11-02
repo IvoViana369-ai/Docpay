@@ -27,6 +27,7 @@ describe('banco de dados', () => {
     expect(await db.query('SELECT name FROM schema_migrations ORDER BY name')).toEqual([
       { name: '001_initial.sql' },
       { name: '002_charge_statuses.sql' },
+      { name: '003_accounts.sql' },
     ]);
   });
 
