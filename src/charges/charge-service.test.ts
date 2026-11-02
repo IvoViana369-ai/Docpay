@@ -6,8 +6,9 @@ import { PostgresLedger } from '../ledger/postgres-ledger.js';
 import type { Ledger } from '../ledger/types.js';
 import { ProviderError } from '../providers/errors.js';
 import { SimulatedProvider } from '../providers/simulated-provider.js';
-import type { ProviderCharge, ProviderChargeRef } from '../providers/types.js';
-import { ChargeService } from './charge-service.js';
+import type { ProviderCharge, ProviderChargeRef, ProviderChargeRequest } from '../providers/types.js';
+import { ChargeService, chargeRequestFingerprint } from './charge-service.js';
+import { InMemoryChargeClaims, PostgresChargeClaims, type ChargeClaims } from './claims.js';
 import { ChargeError } from './errors.js';
 import { PostgresChargeRepository, PostgresWebhookInbox } from './postgres-repositories.js';
 import {
@@ -24,6 +25,7 @@ const now = () => new Date(NOW);
 interface Stores {
   ledger: Ledger;
   charges: ChargeRepository;
+  claims: ChargeClaims;
   webhooks: WebhookInbox;
   close(): Promise<void>;
 }
@@ -35,6 +37,7 @@ const storages: { name: string; create(): Promise<Stores> }[] = [
     create: async () => ({
       ledger: new InMemoryLedger({ now }),
       charges: new InMemoryChargeRepository(),
+      claims: new InMemoryChargeClaims(),
       webhooks: new InMemoryWebhookInbox(),
       close: async () => {},
     }),
@@ -46,6 +49,7 @@ const storages: { name: string; create(): Promise<Stores> }[] = [
       return {
         ledger: new PostgresLedger(db, { now }),
         charges: new PostgresChargeRepository(db),
+        claims: new PostgresChargeClaims(db),
         webhooks: new PostgresWebhookInbox(db),
         close,
       };
@@ -55,9 +59,20 @@ const storages: { name: string; create(): Promise<Stores> }[] = [
 
 beforeAll(() => warmUpTestDatabase(), 60_000);
 
-/** Parceiro simulado que fica fora do ar para as cobranças escolhidas. */
+/** Parceiro simulado que fica fora do ar quando o teste manda. */
 class UnstableProvider extends SimulatedProvider {
   readonly offlineFor = new Set<string>();
+  /** Erro da próxima criação de cobrança, como uma queda de rede. */
+  failNextCreate: Error | undefined;
+  createCalls = 0;
+
+  override async createCharge(request: ProviderChargeRequest): Promise<ProviderCharge> {
+    this.createCalls += 1;
+    const failure = this.failNextCreate;
+    this.failNextCreate = undefined;
+    if (failure) throw failure;
+    return super.createCharge(request);
+  }
 
   override async getCharge(ref: ProviderChargeRef): Promise<ProviderCharge> {
     if (this.offlineFor.has(ref.id)) throw new Error('Parceiro fora do ar.');
@@ -114,12 +129,20 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       provider,
       ledger: stores.ledger,
       charges: stores.charges,
+      claims: stores.claims,
       webhooks: stores.webhooks,
       now,
       newId: () => `ch_${++count}`,
       ...options,
     });
-    return { provider, ledger: stores.ledger, webhooks: stores.webhooks, service };
+    return {
+      provider,
+      ledger: stores.ledger,
+      charges: stores.charges,
+      claims: stores.claims,
+      webhooks: stores.webhooks,
+      service,
+    };
   }
 
   describe('emissão', () => {
@@ -201,12 +224,66 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       ).rejects.toThrow(ProviderError);
     });
 
-    it('duas emissões com a mesma chave ao mesmo tempo dão uma cobrança só', async () => {
-      const { service } = await setup();
-      const [first, second] = await Promise.all([service.create(input), service.create(input)]);
+    it('emissões com a mesma chave ao mesmo tempo chamam o parceiro uma vez só', async () => {
+      const { service, provider } = await setup();
+      const results = await Promise.allSettled([1, 2, 3].map(() => service.create(input)));
 
-      expect(second.id).toBe(first.id);
-      expect(second.providerChargeId).toBe(first.providerChargeId);
+      // Conforme a ordem em que chegam, a outra chamada recebe a mesma cobrança
+      // ou ouve "em andamento". Nunca há uma segunda cobrança no parceiro.
+      expect(provider.createCalls).toBe(1);
+      const created = new Set(results.flatMap((result) => (result.status === 'fulfilled' ? [result.value.id] : [])));
+      expect(created.size).toBe(1);
+      for (const result of results) {
+        if (result.status === 'rejected') expect((result.reason as ChargeError).code).toBe('IN_PROGRESS');
+      }
+      expect((await service.create(input)).id).toBe([...created][0]);
+    });
+
+    it('quem consegue a reserva confere de novo e não chama o parceiro se a cobrança acabou de ser gravada', async () => {
+      const { service, provider, charges } = await setup();
+      const first = await service.create(input);
+
+      // A segunda chamada fez a primeira conferência antes de a primeira gravar,
+      // e só pediu a reserva depois que a primeira já tinha gravado e liberado.
+      const lookup = charges.findByIdempotencyKey.bind(charges);
+      let lookups = 0;
+      charges.findByIdempotencyKey = async (key) => (++lookups === 1 ? undefined : lookup(key));
+
+      expect((await service.create(input)).id).toBe(first.id);
+      expect(provider.createCalls).toBe(1);
+    });
+
+    it('se o parceiro recusar ou não responder, a chave fica livre para tentar de novo', async () => {
+      const { service, provider } = await setup();
+      provider.failNextCreate = new ProviderError('simulated', 'UNAVAILABLE', 'Parceiro fora do ar.');
+
+      await expect(service.create(input)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+      expect((await service.create(input)).status).toBe('pending');
+      expect(provider.createCalls).toBe(2);
+    });
+
+    it('uma reserva parada há mais de 10 minutos é de uma tentativa que parou no meio e pode ser assumida', async () => {
+      const { service, claims, provider } = await setup();
+      // Reserva de uma tentativa que caiu entre o parceiro e a gravação, 11 minutos antes.
+      await claims.acquire(input.idempotencyKey, chargeRequestFingerprint(input), '2026-10-29T11:49:00.000Z', '2026-10-29T11:00:00.000Z');
+
+      expect((await service.create(input)).status).toBe('pending');
+      expect(provider.createCalls).toBe(1);
+    });
+
+    it('uma reserva recente faz a nova tentativa ouvir "em andamento"', async () => {
+      const { service, claims, provider } = await setup();
+      await claims.acquire(input.idempotencyKey, chargeRequestFingerprint(input), '2026-10-29T11:55:00.000Z', '2026-10-29T11:00:00.000Z');
+
+      await expect(service.create(input)).rejects.toMatchObject({ code: 'IN_PROGRESS' });
+      expect(provider.createCalls).toBe(0);
+    });
+
+    it('uma reserva da mesma chave com outro pedido é conflito', async () => {
+      const { service, claims } = await setup();
+      await claims.acquire(input.idempotencyKey, 'outro pedido', '2026-10-29T11:55:00.000Z', '2026-10-29T11:00:00.000Z');
+
+      await expect(service.create(input)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
     });
 
     it('recusa a mesma chave com outro conteúdo', async () => {

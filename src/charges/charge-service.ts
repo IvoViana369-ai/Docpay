@@ -1,21 +1,29 @@
 import { randomUUID } from 'node:crypto';
 import type { Ledger } from '../ledger/types.js';
-import type { IncomingWebhook, PaymentProvider } from '../providers/types.js';
+import type { IncomingWebhook, PaymentProvider, ProviderCharge } from '../providers/types.js';
 import { canonicalJson } from '../shared/canonical-json.js';
 import { DEFAULT_TIME_ZONE, todayIn } from '../shared/dates.js';
 import { calculateSplit } from '../split/calculate-split.js';
 import { SplitError } from '../split/errors.js';
 import type { SplitResult } from '../split/types.js';
+import type { ChargeClaims } from './claims.js';
 import { ChargeError, type ChargeIssue } from './errors.js';
 import type { ChargeRepository, PendingCursor, WebhookInbox } from './repositories.js';
 import { findDivergences, requestedTransfers, settlementTransaction } from './settlement.js';
 import type { Charge, CreateChargeInput } from './types.js';
 import { validateChargeFields } from './validate-charge.js';
 
+/**
+ * Depois de quanto tempo uma reserva de chave é considerada de uma tentativa
+ * que parou no meio (o mesmo prazo que o DocLine usa para o "gerando").
+ */
+const CLAIM_TIMEOUT_MS = 10 * 60 * 1000;
+
 export interface ChargeServiceDeps {
   provider: PaymentProvider;
   ledger: Ledger;
   charges: ChargeRepository;
+  claims: ChargeClaims;
   webhooks: WebhookInbox;
   now?: () => Date;
   newId?: () => string;
@@ -57,6 +65,7 @@ export class ChargeService {
   readonly #provider: PaymentProvider;
   readonly #ledger: Ledger;
   readonly #charges: ChargeRepository;
+  readonly #claims: ChargeClaims;
   readonly #webhooks: WebhookInbox;
   readonly #now: () => Date;
   readonly #newId: () => string;
@@ -67,6 +76,7 @@ export class ChargeService {
     this.#provider = deps.provider;
     this.#ledger = deps.ledger;
     this.#charges = deps.charges;
+    this.#claims = deps.claims;
     this.#webhooks = deps.webhooks;
     this.#now = deps.now ?? (() => new Date());
     this.#newId = deps.newId ?? (() => randomUUID());
@@ -85,19 +95,31 @@ export class ChargeService {
     const existing = await this.#charges.findByIdempotencyKey(input.idempotencyKey);
     if (existing) return sameRequestOrConflict(existing, input);
 
+    const finished = await this.#claim(input);
+    if (finished) return finished;
+
     const reference = input.reference ?? input.idempotencyKey;
     const transfers = requestedTransfers({ expectedShares: split.shares });
-    const remote = await this.#provider.createCharge({
-      idempotencyKey: input.idempotencyKey,
-      reference,
-      beneficiary: input.rule.beneficiary,
-      method: input.method,
-      amountCents: input.amountCents,
-      dueDate: input.dueDate,
-      payer: input.payer,
-      transfers,
-      ...(input.description === undefined ? {} : { description: input.description }),
-    });
+    let remote: ProviderCharge;
+    try {
+      remote = await this.#provider.createCharge({
+        idempotencyKey: input.idempotencyKey,
+        reference,
+        beneficiary: input.rule.beneficiary,
+        method: input.method,
+        amountCents: input.amountCents,
+        dueDate: input.dueDate,
+        payer: input.payer,
+        transfers,
+        ...(input.description === undefined ? {} : { description: input.description }),
+      });
+    } catch (error) {
+      // O parceiro recusou ou não respondeu: libera a chave para uma nova
+      // tentativa. Quando o parceiro não responde, a mensagem do erro diz
+      // para conferir no painel dele se a cobrança não foi criada.
+      await this.#claims.release(input.idempotencyKey).catch(() => undefined);
+      throw error;
+    }
 
     const charge: Charge = {
       id: this.#newId(),
@@ -122,7 +144,11 @@ export class ChargeService {
     if (remote.digitableLine !== undefined) charge.digitableLine = remote.digitableLine;
     if (remote.pixCopyPaste !== undefined) charge.pixCopyPaste = remote.pixCopyPaste;
 
-    if (await this.#charges.insert(charge)) {
+    // Se a gravação falhar aqui, a reserva continua: uma nova tentativa nos
+    // próximos minutos recebe "em andamento", em vez de criar outra cobrança.
+    const inserted = await this.#charges.insert(charge);
+    await this.#claims.release(input.idempotencyKey);
+    if (inserted) {
       // O parceiro pode já devolver a cobrança paga ou recusada. Se a consulta
       // falhar agora, a cobrança já está criada e a conciliação confere depois.
       if (remote.status !== 'pending') await this.sync(charge.id).catch(() => undefined);
@@ -241,6 +267,44 @@ export class ChargeService {
     }
   }
 
+  /**
+   * Reserva a chave antes de falar com o parceiro. Devolve a cobrança se outra
+   * chamada com a mesma chave acabou de gravá-la; lança IN_PROGRESS se outra
+   * chamada ainda está no meio.
+   */
+  async #claim(input: CreateChargeInput): Promise<Charge | undefined> {
+    const now = this.#now();
+    const fingerprint = chargeRequestFingerprint(input);
+    const claim = await this.#claims.acquire(
+      input.idempotencyKey,
+      fingerprint,
+      now.toISOString(),
+      new Date(now.getTime() - CLAIM_TIMEOUT_MS).toISOString(),
+    );
+    if (claim.acquired) {
+      // Com a reserva na mão, confere de novo: outra chamada pode ter gravado a
+      // cobrança e liberado a reserva depois da primeira conferência. A cobrança
+      // é sempre gravada antes de a reserva ser liberada, então ela aparece aqui.
+      const recorded = await this.#charges.findByIdempotencyKey(input.idempotencyKey);
+      if (!recorded) return undefined;
+      await this.#claims.release(input.idempotencyKey);
+      return sameRequestOrConflict(recorded, input);
+    }
+
+    const done = await this.#charges.findByIdempotencyKey(input.idempotencyKey);
+    if (done) return sameRequestOrConflict(done, input);
+    if (claim.fingerprint !== fingerprint) {
+      throw new ChargeError(
+        'IDEMPOTENCY_CONFLICT',
+        `A chave ${input.idempotencyKey} já foi usada numa cobrança diferente.`,
+      );
+    }
+    throw new ChargeError(
+      'IN_PROGRESS',
+      `A cobrança com a chave ${input.idempotencyKey} está sendo gerada. Consulte de novo em alguns segundos.`,
+    );
+  }
+
   /** Confere tudo de uma vez e devolve a divisão; lança ChargeError com todos os problemas. */
   #prepare(input: CreateChargeInput): SplitResult {
     const issues: ChargeIssue[] = validateChargeFields(input, todayIn(this.#timeZone, this.#now()));
@@ -259,14 +323,15 @@ export class ChargeService {
 }
 
 function sameRequestOrConflict(existing: Charge, input: CreateChargeInput): Charge {
-  if (requestFingerprint(existing) === requestFingerprint(input)) return existing;
+  if (chargeRequestFingerprint(existing) === chargeRequestFingerprint(input)) return existing;
   throw new ChargeError(
     'IDEMPOTENCY_CONFLICT',
     `A chave ${input.idempotencyKey} já foi usada numa cobrança diferente.`,
   );
 }
 
-function requestFingerprint(request: CreateChargeInput | Charge): string {
+/** O conteúdo de um pedido de cobrança, para reconhecer uma repetição da mesma chave. */
+export function chargeRequestFingerprint(request: CreateChargeInput | Charge): string {
   const { idempotencyKey, method, amountCents, dueDate, payer, rule, description, fiscalDocumentKey } = request;
   return canonicalJson({
     reference: request.reference ?? idempotencyKey,

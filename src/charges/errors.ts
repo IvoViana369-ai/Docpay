@@ -20,7 +20,12 @@ export interface ChargeIssue {
   path?: string;
 }
 
-export type ChargeErrorCode = 'INVALID_CHARGE' | 'IDEMPOTENCY_CONFLICT' | 'CHARGE_NOT_FOUND';
+export type ChargeErrorCode =
+  | 'INVALID_CHARGE'
+  | 'IDEMPOTENCY_CONFLICT'
+  /** Outra chamada com a mesma chave ainda está gerando a cobrança. */
+  | 'IN_PROGRESS'
+  | 'CHARGE_NOT_FOUND';
 
 export class ChargeError extends Error {
   override readonly name = 'ChargeError';

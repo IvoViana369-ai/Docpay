@@ -28,6 +28,7 @@ describe('banco de dados', () => {
       { name: '001_initial.sql' },
       { name: '002_charge_statuses.sql' },
       { name: '003_accounts.sql' },
+      { name: '004_charge_claims.sql' },
     ]);
   });
 
