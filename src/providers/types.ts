@@ -72,10 +72,12 @@ export interface ProviderCharge {
   id: string;
   status: ProviderChargeStatus;
   providerStatus: ProviderStatus;
-  /** Link do boleto ou da imagem do QR do Pix, quando o parceiro devolve. */
+  /** Link da página ou do PDF do boleto, quando o parceiro devolve. */
   paymentUrl?: string;
   /** Linha digitável do boleto. */
   digitableLine?: string;
+  /** Imagem do QR do Pix: um link ou a imagem PNG em base64, como o parceiro devolve. */
+  pixQrCodeImage?: string;
   /** Código do Pix copia e cola. */
   pixCopyPaste?: string;
   payment?: ProviderPayment;

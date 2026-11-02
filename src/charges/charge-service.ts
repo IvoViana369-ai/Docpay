@@ -142,6 +142,7 @@ export class ChargeService {
     if (input.fiscalDocumentKey !== undefined) charge.fiscalDocumentKey = input.fiscalDocumentKey;
     if (remote.paymentUrl !== undefined) charge.paymentUrl = remote.paymentUrl;
     if (remote.digitableLine !== undefined) charge.digitableLine = remote.digitableLine;
+    if (remote.pixQrCodeImage !== undefined) charge.pixQrCodeImage = remote.pixQrCodeImage;
     if (remote.pixCopyPaste !== undefined) charge.pixCopyPaste = remote.pixCopyPaste;
 
     // Se a gravação falhar aqui, a reserva continua: uma nova tentativa nos
