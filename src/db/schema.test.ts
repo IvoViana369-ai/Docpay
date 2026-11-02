@@ -24,7 +24,10 @@ describe('banco de dados', () => {
     const db = await open();
 
     expect(await migrate(db)).toEqual([]);
-    expect(await db.query('SELECT name FROM schema_migrations')).toEqual([{ name: '001_initial.sql' }]);
+    expect(await db.query('SELECT name FROM schema_migrations ORDER BY name')).toEqual([
+      { name: '001_initial.sql' },
+      { name: '002_charge_statuses.sql' },
+    ]);
   });
 
   describe('razão', () => {
@@ -94,7 +97,17 @@ describe('banco de dados', () => {
   });
 
   describe('cobranças', () => {
-    async function insertCharge(db: Db, status: 'pending' | 'paid'): Promise<void> {
+    type Status = 'pending' | 'paid' | 'expired' | 'canceled' | 'failed';
+
+    async function setStatus(db: Db, status: Status): Promise<void> {
+      await db.query(
+        `UPDATE charges SET status = $1, document = jsonb_set(document, '{status}', to_jsonb($1::text))
+          WHERE id = 'ch_1'`,
+        [status],
+      );
+    }
+
+    async function insertCharge(db: Db, status: Status): Promise<void> {
       const document = {
         id: 'ch_1',
         idempotencyKey: 'chave-1',
@@ -116,16 +129,30 @@ describe('banco de dados', () => {
       await expect(db.exec("DELETE FROM charges WHERE id = 'ch_1'")).rejects.toThrow('Cobranças não são apagadas');
     });
 
-    it('cobrança paga não volta a ficar em aberto', async () => {
+    it('cobrança paga não muda mais de status', async () => {
       const db = await open();
       await insertCharge(db, 'paid');
 
-      await expect(
-        db.exec(
-          `UPDATE charges SET status = 'pending', document = jsonb_set(document, '{status}', '"pending"')
-            WHERE id = 'ch_1'`,
-        ),
-      ).rejects.toThrow('já foi paga e não pode voltar a ficar em aberto');
+      for (const status of ['pending', 'expired', 'canceled', 'failed'] as const) {
+        await expect(setStatus(db, status), status).rejects.toThrow('já foi paga e não pode mudar de status');
+      }
+    });
+
+    it('cobrança encerrada não volta a ficar em aberto, mas pode passar a paga', async () => {
+      const db = await open();
+      await insertCharge(db, 'expired');
+
+      await expect(setStatus(db, 'pending')).rejects.toThrow('está encerrada (expired) e só pode passar a paga');
+      await expect(setStatus(db, 'canceled')).rejects.toThrow('só pode passar a paga');
+      await setStatus(db, 'paid');
+      expect(await db.query("SELECT status FROM charges WHERE id = 'ch_1'")).toEqual([{ status: 'paid' }]);
+    });
+
+    it('aceita só os status conhecidos', async () => {
+      const db = await open();
+      await insertCharge(db, 'pending');
+
+      await expect(setStatus(db, 'perdida' as Status)).rejects.toThrow('charges_status_check');
     });
 
     it('a identidade da cobrança não muda', async () => {

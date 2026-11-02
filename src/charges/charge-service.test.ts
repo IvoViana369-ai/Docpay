@@ -6,7 +6,7 @@ import { PostgresLedger } from '../ledger/postgres-ledger.js';
 import type { Ledger } from '../ledger/types.js';
 import { ProviderError } from '../providers/errors.js';
 import { SimulatedProvider } from '../providers/simulated-provider.js';
-import type { ProviderCharge } from '../providers/types.js';
+import type { ProviderCharge, ProviderChargeRef } from '../providers/types.js';
 import { ChargeService } from './charge-service.js';
 import { ChargeError } from './errors.js';
 import { PostgresChargeRepository, PostgresWebhookInbox } from './postgres-repositories.js';
@@ -59,19 +59,35 @@ beforeAll(() => warmUpTestDatabase(), 60_000);
 class UnstableProvider extends SimulatedProvider {
   readonly offlineFor = new Set<string>();
 
-  override async getCharge(chargeId: string): Promise<ProviderCharge> {
-    if (this.offlineFor.has(chargeId)) throw new Error('Parceiro fora do ar.');
-    return super.getCharge(chargeId);
+  override async getCharge(ref: ProviderChargeRef): Promise<ProviderCharge> {
+    if (this.offlineFor.has(ref.id)) throw new Error('Parceiro fora do ar.');
+    return super.getCharge(ref);
   }
 }
 
 const input: CreateChargeInput = {
   idempotencyKey: 'docline-fatura-123',
+  method: 'boleto',
   amountCents: 100_000,
   dueDate: '2026-11-10',
-  payer: { name: 'Maria Silva', document: '529.982.247-25' },
+  payer: {
+    name: 'Maria Silva',
+    document: '529.982.247-25',
+    address: {
+      zipCode: '60160-230',
+      street: 'Rua Silva Paulet',
+      number: '100',
+      district: 'Meireles',
+      city: 'Fortaleza',
+      state: 'CE',
+    },
+  },
   rule: { beneficiary: 'vendedor', recipients: [{ account: 'parceiro', percentBps: 4_000 }] },
 };
+
+function webhookOf(body: string) {
+  return { body, query: {} };
+}
 
 async function chargeRejection(promise: Promise<unknown>): Promise<ChargeError> {
   try {
@@ -107,28 +123,51 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
   }
 
   describe('emissão', () => {
-    it('emite a cobrança no parceiro com os repasses já em centavos', async () => {
+    it('emite o boleto no parceiro com os repasses já em centavos', async () => {
       const { service, provider } = await setup();
       const charge = await service.create(input);
 
       expect(charge).toMatchObject({
         id: 'ch_1',
+        reference: 'docline-fatura-123',
+        method: 'boleto',
         status: 'pending',
         amountCents: 100_000,
         provider: 'simulated',
         providerChargeId: 'sim_ch_000001',
+        providerStatus: { code: 'pending', label: 'Pendente' },
+        paymentUrl: 'https://simulado.docpay.invalid/boleto/sim_ch_000001',
         pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
         divergences: [],
         createdAt: NOW,
       });
+      expect(charge.digitableLine).toMatch(/^999\d{44}$/);
       expect(charge.expectedShares.map(({ account, grossCents }) => [account, grossCents])).toEqual([
         ['vendedor', 60_000],
         ['parceiro', 40_000],
       ]);
-      const remote = await provider.getCharge(charge.providerChargeId);
-      expect(remote.beneficiary).toBe('vendedor');
-      expect(remote.transfers).toEqual([{ account: 'parceiro', amountCents: 40_000 }]);
+      expect(provider.requestFor(charge.providerChargeId)).toMatchObject({
+        reference: 'docline-fatura-123',
+        beneficiary: 'vendedor',
+        method: 'boleto',
+        transfers: [{ account: 'parceiro', amountCents: 40_000 }],
+      });
       expect(await service.get(charge.id)).toEqual(charge);
+    });
+
+    it('emite o Pix sem exigir endereço, com a referência escolhida', async () => {
+      const { service, provider } = await setup();
+      const { address: _address, ...payerWithoutAddress } = input.payer;
+      const charge = await service.create({
+        ...input,
+        method: 'pix',
+        reference: 'DOCLINE-123',
+        payer: payerWithoutAddress,
+      });
+
+      expect(charge).toMatchObject({ method: 'pix', reference: 'DOCLINE-123', pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001' });
+      expect(charge.digitableLine).toBeUndefined();
+      expect(provider.requestFor(charge.providerChargeId).reference).toBe('DOCLINE-123');
     });
 
     it('não manda ao parceiro repasse de valor zero', async () => {
@@ -146,7 +185,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
         },
       });
 
-      expect((await provider.getCharge(charge.providerChargeId)).transfers).toEqual([
+      expect(provider.requestFor(charge.providerChargeId).transfers).toEqual([
         { account: 'parceiro', amountCents: 100 },
       ]);
     });
@@ -157,7 +196,9 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const again = await service.create(structuredClone(input));
 
       expect(again).toEqual(first);
-      await expect(provider.getCharge('sim_ch_000002')).rejects.toThrow(ProviderError);
+      await expect(
+        provider.getCharge({ id: 'sim_ch_000002', method: 'boleto', amountCents: 1, transfers: [] }),
+      ).rejects.toThrow(ProviderError);
     });
 
     it('duas emissões com a mesma chave ao mesmo tempo dão uma cobrança só', async () => {
@@ -181,7 +222,9 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       // Primeira tentativa: o parceiro criou a cobrança, mas a resposta não chegou ao DocPay.
       const lost = await provider.createCharge({
         idempotencyKey: input.idempotencyKey,
+        reference: input.idempotencyKey,
         beneficiary: 'vendedor',
+        method: 'boleto',
         amountCents: input.amountCents,
         dueDate: input.dueDate,
         payer: input.payer,
@@ -197,6 +240,8 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const error = await chargeRejection(
         service.create({
           idempotencyKey: '',
+          reference: ' ',
+          method: 'cheque' as 'boleto',
           amountCents: 100_000,
           dueDate: '2026-02-30',
           payer: { name: ' ', document: '123.456.789-00' },
@@ -211,12 +256,40 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       expect(error.code).toBe('INVALID_CHARGE');
       expect(error.issues.map(({ code, path }) => ({ code, path }))).toEqual([
         { code: 'MISSING_IDEMPOTENCY_KEY', path: 'idempotencyKey' },
+        { code: 'INVALID_REFERENCE', path: 'reference' },
+        { code: 'INVALID_METHOD', path: 'method' },
         { code: 'INVALID_DUE_DATE', path: 'dueDate' },
         { code: 'MISSING_PAYER_NAME', path: 'payer.name' },
         { code: 'INVALID_PAYER_DOCUMENT', path: 'payer.document' },
         { code: 'UNSUPPORTED_FEE_POLICY', path: 'rule.feePolicy' },
         { code: 'INVALID_PERCENT', path: 'rule.recipients[0].percentBps' },
       ]);
+    });
+
+    it('no boleto, exige o endereço completo do pagador e diz o que falta', async () => {
+      const { service } = await setup();
+      const error = await chargeRejection(
+        service.create({
+          ...input,
+          payer: { ...input.payer, address: { zipCode: '6016', street: 'Rua A', district: '', city: 'Fortaleza', state: 'Ceará' } },
+        }),
+      );
+
+      expect(error.issues.map(({ code, path }) => ({ code, path }))).toEqual([
+        { code: 'MISSING_PAYER_ADDRESS', path: 'payer.address.zipCode' },
+        { code: 'MISSING_PAYER_ADDRESS', path: 'payer.address.district' },
+        { code: 'MISSING_PAYER_ADDRESS', path: 'payer.address.state' },
+      ]);
+      expect(error.issues[0]?.message).toBe('No boleto, o endereço do pagador precisa estar completo: falta CEP.');
+    });
+
+    it('recusa vencimento que já passou, no fuso do DocPay', async () => {
+      const { service } = await setup();
+      const error = await chargeRejection(service.create({ ...input, dueDate: '2026-10-28' }));
+      expect(error.issues.map((issue) => issue.code)).toEqual(['PAST_DUE_DATE']);
+
+      // Vencimento hoje é aceito.
+      expect((await service.create({ ...input, dueDate: '2026-10-29' })).status).toBe('pending');
     });
 
     it('recusa repasses maiores que o valor', async () => {
@@ -249,7 +322,9 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const charge = await service.create(input);
       const webhook = provider.pay(charge.providerChargeId, { method: 'pix' });
 
-      expect(await service.handleWebhook(webhook)).toEqual({ status: 'settled', chargeId: charge.id });
+      expect(await service.handleWebhook(webhookOf(webhook))).toEqual([
+        { providerChargeId: charge.providerChargeId, status: 'settled', chargeId: charge.id },
+      ]);
 
       expect(await ledger.balance(ledgerAccountFor('vendedor'))).toBe(59_760);
       expect(await ledger.balance(ledgerAccountFor('parceiro'))).toBe(40_000);
@@ -259,6 +334,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const paid = await service.get(charge.id);
       expect(paid).toMatchObject({
         status: 'paid',
+        providerStatus: { code: 'paid', label: 'Pago' },
         divergences: [],
         payment: { method: 'pix', paidAmountCents: 100_000, feeCents: 240 },
       });
@@ -268,7 +344,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
     it('o extrato do beneficiário mostra o que ele recebeu, repassou e pagou de tarifa', async () => {
       const { service, provider, ledger } = await setup();
       const charge = await service.create(input);
-      await service.handleWebhook(provider.pay(charge.providerChargeId, { method: 'boleto' }));
+      await service.handleWebhook(webhookOf(provider.pay(charge.providerChargeId)));
 
       const lines = await ledger.statement(ledgerAccountFor('vendedor'));
       expect(lines.map(({ memo, amountCents, balanceCents }) => ({ memo, amountCents, balanceCents }))).toEqual([
@@ -283,8 +359,10 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const charge = await service.create(input);
       const webhook = provider.pay(charge.providerChargeId);
 
-      await service.handleWebhook(webhook);
-      expect(await service.handleWebhook(webhook)).toEqual({ status: 'unchanged', chargeId: charge.id });
+      await service.handleWebhook(webhookOf(webhook));
+      expect(await service.handleWebhook(webhookOf(webhook))).toEqual([
+        { providerChargeId: charge.providerChargeId, status: 'unchanged', chargeId: charge.id },
+      ]);
       expect(await ledger.statement(PAYERS)).toHaveLength(1);
     });
 
@@ -303,7 +381,9 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const charge = await service.create(input);
       const forged = JSON.stringify({ id: 'evt_falso', chargeId: charge.providerChargeId });
 
-      expect(await service.handleWebhook(forged)).toEqual({ status: 'unchanged', chargeId: charge.id });
+      expect(await service.handleWebhook(webhookOf(forged))).toEqual([
+        { providerChargeId: charge.providerChargeId, status: 'unchanged', chargeId: charge.id },
+      ]);
       expect(await ledger.balance(PAYERS)).toBe(0);
       expect((await service.get(charge.id))?.status).toBe('pending');
     });
@@ -311,13 +391,15 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
     it('ignora aviso de cobrança que o DocPay não emitiu', async () => {
       const { service } = await setup();
       const unknown = JSON.stringify({ id: 'evt_1', chargeId: 'sim_ch_999999' });
-      expect(await service.handleWebhook(unknown)).toEqual({ status: 'unknown_charge' });
+      expect(await service.handleWebhook(webhookOf(unknown))).toEqual([
+        { providerChargeId: 'sim_ch_999999', status: 'unknown_charge' },
+      ]);
     });
 
     it('guarda o aviso bruto mesmo quando ele é inválido', async () => {
       const { service, webhooks } = await setup();
 
-      await expect(service.handleWebhook('isto não é json')).rejects.toMatchObject({
+      await expect(service.handleWebhook(webhookOf('isto não é json'))).rejects.toMatchObject({
         name: 'ProviderError',
         code: 'INVALID_WEBHOOK',
       });
@@ -330,14 +412,26 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const { service, provider, ledger } = await setup();
       const charge = await service.create(input);
       // Pago com R$ 10,00 de juros.
-      await service.handleWebhook(
-        provider.pay(charge.providerChargeId, { method: 'boleto', paidAmountCents: 101_000 }),
-      );
+      await service.handleWebhook(webhookOf(provider.pay(charge.providerChargeId, { paidAmountCents: 101_000 })));
 
       const paid = await service.get(charge.id);
       expect(paid?.divergences.map((divergence) => divergence.code)).toEqual(['PAID_AMOUNT_DIFFERS']);
       expect(await ledger.balance(ledgerAccountFor('vendedor'))).toBe(101_000 - 40_000 - 299);
       expect(await ledger.balance(ledgerAccountFor('parceiro'))).toBe(40_000);
+    });
+
+    it('cobrança baixada pelo parceiro fica vencida, sem lançamento no razão', async () => {
+      const { service, provider, ledger } = await setup();
+      const charge = await service.create(input);
+
+      expect(await service.handleWebhook(webhookOf(provider.expire(charge.providerChargeId)))).toEqual([
+        { providerChargeId: charge.providerChargeId, status: 'updated', chargeId: charge.id },
+      ]);
+      expect(await service.get(charge.id)).toMatchObject({
+        status: 'expired',
+        providerStatus: { code: 'expired', label: 'Baixado' },
+      });
+      expect(await ledger.balance(PAYERS)).toBe(0);
     });
 
     it('sync dá baixa mesmo sem aviso e não lança de novo', async () => {
@@ -371,23 +465,25 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       return charges;
     }
 
-    it('dá baixa nas cobranças pagas cujo aviso se perdeu, passando por todas as páginas', async () => {
+    it('registra o que mudou nas cobranças cujo aviso se perdeu, passando por todas as páginas', async () => {
       const { service, provider, ledger } = await setup({ reconciliationPageSize: 2 });
-      const [first, second, third] = await createCharges(service, 3);
-      // Pagas, mas os avisos nunca chegaram.
+      const [first, second, third, fourth] = await createCharges(service, 4);
+      // Pagas ou baixadas, mas os avisos nunca chegaram.
       provider.pay(first!.providerChargeId);
       provider.pay(third!.providerChargeId);
+      provider.expire(fourth!.providerChargeId);
 
       expect(await service.reconcilePending()).toEqual({
-        checked: 3,
+        checked: 4,
         settled: [first!.id, third!.id],
+        updated: [fourth!.id],
         failed: [],
       });
       expect(await ledger.balance(PAYERS)).toBe(-200_000);
       expect((await service.get(second!.id))?.status).toBe('pending');
 
       // Na próxima rodada, só a cobrança ainda em aberto é consultada.
-      expect(await service.reconcilePending()).toEqual({ checked: 1, settled: [], failed: [] });
+      expect(await service.reconcilePending()).toEqual({ checked: 1, settled: [], updated: [], failed: [] });
     });
 
     it('uma falha numa cobrança não interrompe as outras', async () => {
@@ -400,6 +496,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       expect(await service.reconcilePending()).toEqual({
         checked: 2,
         settled: [second!.id],
+        updated: [],
         failed: [{ chargeId: first!.id, message: 'Parceiro fora do ar.' }],
       });
 
@@ -408,13 +505,14 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       expect(await service.reconcilePending()).toEqual({
         checked: 1,
         settled: [first!.id],
+        updated: [],
         failed: [],
       });
     });
 
     it('sem cobranças em aberto, não consulta nada', async () => {
       const { service } = await setup();
-      expect(await service.reconcilePending()).toEqual({ checked: 0, settled: [], failed: [] });
+      expect(await service.reconcilePending()).toEqual({ checked: 0, settled: [], updated: [], failed: [] });
     });
   });
 });

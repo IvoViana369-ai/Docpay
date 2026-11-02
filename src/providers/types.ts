@@ -3,11 +3,27 @@ import type { AccountId } from '../split/types.js';
 
 export type PaymentMethod = 'boleto' | 'pix';
 
+export interface PayerAddress {
+  /** CEP, com ou sem traço. */
+  zipCode: string;
+  street: string;
+  /** Sem número, vai "S/N". */
+  number?: string;
+  complement?: string;
+  district: string;
+  city: string;
+  /** UF, duas letras. */
+  state: string;
+}
+
 export interface Payer {
   name: string;
   /** CPF ou CNPJ, com ou sem pontuação. */
   document: string;
   email?: string;
+  phone?: string;
+  /** Obrigatório no boleto: o banco exige o endereço de quem paga. */
+  address?: PayerAddress;
 }
 
 /** Repasse para um destinatário, em centavos fixos. */
@@ -17,10 +33,13 @@ export interface Transfer {
 }
 
 export interface ProviderChargeRequest {
-  /** O parceiro usa a chave para não criar a mesma cobrança duas vezes. */
+  /** Chave de idempotência da cobrança. */
   idempotencyKey: string;
+  /** Texto curto que identifica a cobrança no painel do parceiro, como "DOCLINE-123". */
+  reference: string;
   /** Credor da cobrança: aparece no boleto e fica com o restante. */
   beneficiary: AccountId;
+  method: PaymentMethod;
   amountCents: Cents;
   /** Vencimento, no formato AAAA-MM-DD. */
   dueDate: string;
@@ -30,45 +49,70 @@ export interface ProviderChargeRequest {
   description?: string;
 }
 
+/** Status da cobrança no parceiro, traduzido para o DocPay. */
+export type ProviderChargeStatus = 'pending' | 'paid' | 'expired' | 'canceled' | 'failed';
+
+/** O status como o parceiro informa, para conferência. */
+export interface ProviderStatus {
+  code: string;
+  label: string;
+}
+
 export interface ProviderPayment {
   paidAt: string;
   method: PaymentMethod;
   paidAmountCents: Cents;
   /** Tarifa do parceiro, descontada do beneficiário. */
   feeCents: Cents;
-  /** Repasses que o parceiro de fato executou. */
+  /** Repasses executados. */
   transfers: Transfer[];
 }
 
 export interface ProviderCharge {
   id: string;
-  status: 'pending' | 'paid';
-  beneficiary: AccountId;
-  amountCents: Cents;
-  dueDate: string;
-  /** Repasses pedidos na emissão. */
-  transfers: Transfer[];
+  status: ProviderChargeStatus;
+  providerStatus: ProviderStatus;
+  /** Link do boleto ou da imagem do QR do Pix, quando o parceiro devolve. */
+  paymentUrl?: string;
   /** Linha digitável do boleto. */
-  digitableLine: string;
+  digitableLine?: string;
   /** Código do Pix copia e cola. */
-  pixCopyPaste: string;
+  pixCopyPaste?: string;
   payment?: ProviderPayment;
 }
 
-/** O que se aproveita de um aviso (webhook) do parceiro. */
-export interface ProviderWebhook {
-  eventId: string;
-  chargeId: string;
+/**
+ * O que o DocPay sabe de uma cobrança. Vai junto na consulta, para o parceiro
+ * completar o que a resposta dele não traz (a Safe2Pay, por exemplo, não
+ * devolve a tarifa nem os repasses na consulta).
+ */
+export interface ProviderChargeRef {
+  id: string;
+  method: PaymentMethod;
+  amountCents: Cents;
+  transfers: readonly Transfer[];
 }
 
-/** O que o DocPay precisa de um parceiro. Cada parceiro real terá um adaptador com esta interface. */
+/** Aviso (webhook) recebido do parceiro, como chegou. */
+export interface IncomingWebhook {
+  body: string;
+  /** Parâmetros do endereço do aviso, como a chave `k` da Safe2Pay. */
+  query: Readonly<Record<string, string | undefined>>;
+}
+
+/** O que se aproveita de um aviso: quais cobranças consultar. */
+export interface ProviderWebhook {
+  chargeIds: string[];
+}
+
+/** O que o DocPay precisa de um parceiro. Cada parceiro tem um adaptador com esta interface. */
 export interface PaymentProvider {
   readonly name: string;
   createCharge(request: ProviderChargeRequest): Promise<ProviderCharge>;
-  getCharge(chargeId: string): Promise<ProviderCharge>;
+  getCharge(ref: ProviderChargeRef): Promise<ProviderCharge>;
   /**
-   * Lê o corpo de um aviso. O conteúdo não é confiável, porque qualquer um
-   * pode mandar um aviso falso: serve só para saber qual cobrança consultar.
+   * Confere e lê um aviso do parceiro. O conteúdo nunca é confiável: serve só
+   * para saber quais cobranças consultar.
    */
-  parseWebhook(body: string): ProviderWebhook;
+  parseWebhook(webhook: IncomingWebhook): ProviderWebhook;
 }

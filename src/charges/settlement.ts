@@ -1,8 +1,15 @@
 import { PAYERS, PROVIDER_FEES, ledgerAccountFor } from '../ledger/accounts.js';
 import type { LedgerEntry, NewLedgerTransaction } from '../ledger/types.js';
 import { formatBRL } from '../money/cents.js';
-import type { ProviderPayment } from '../providers/types.js';
+import type { ProviderPayment, Transfer } from '../providers/types.js';
 import type { Charge, Divergence } from './types.js';
+
+/** Os repasses pedidos ao parceiro na emissão: a parte de cada destinatário, sem os de valor zero. */
+export function requestedTransfers(charge: Pick<Charge, 'expectedShares'>): Transfer[] {
+  return charge.expectedShares
+    .filter((share) => share.role === 'recipient' && share.grossCents > 0)
+    .map(({ account, grossCents }) => ({ account, amountCents: grossCents }));
+}
 
 /**
  * Lançamento da baixa de uma cobrança paga, com o que o parceiro de fato

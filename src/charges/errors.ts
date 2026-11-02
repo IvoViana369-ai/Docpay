@@ -3,9 +3,13 @@ import type { SplitIssueCode } from '../split/errors.js';
 export type ChargeIssueCode =
   | SplitIssueCode
   | 'MISSING_IDEMPOTENCY_KEY'
+  | 'INVALID_REFERENCE'
+  | 'INVALID_METHOD'
   | 'INVALID_DUE_DATE'
+  | 'PAST_DUE_DATE'
   | 'MISSING_PAYER_NAME'
   | 'INVALID_PAYER_DOCUMENT'
+  | 'MISSING_PAYER_ADDRESS'
   | 'UNSUPPORTED_FEE_POLICY';
 
 export interface ChargeIssue {

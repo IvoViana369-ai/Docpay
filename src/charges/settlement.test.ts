@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderPayment } from '../providers/types.js';
-import { findDivergences, settlementTransaction } from './settlement.js';
+import { findDivergences, requestedTransfers, settlementTransaction } from './settlement.js';
 import type { Charge } from './types.js';
 
 function chargeFixture(): Charge {
   return {
     id: 'ch_1',
     idempotencyKey: 'docline-fatura-1',
+    reference: 'DOCLINE-1',
+    method: 'boleto',
     status: 'pending',
     amountCents: 100_000,
     dueDate: '2026-11-10',
@@ -18,6 +20,7 @@ function chargeFixture(): Charge {
     ],
     provider: 'simulated',
     providerChargeId: 'sim_ch_000001',
+    providerStatus: { code: 'pending', label: 'Pendente' },
     digitableLine: '999',
     pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
     divergences: [],
@@ -59,6 +62,21 @@ describe('settlementTransaction', () => {
   it('sem tarifa, não lança partida de tarifa', () => {
     const transaction = settlementTransaction(chargeFixture(), { ...payment, feeCents: 0 });
     expect(transaction.entries.map((entry) => entry.memo)).not.toContain('Tarifa do parceiro');
+  });
+});
+
+describe('requestedTransfers', () => {
+  it('pede ao parceiro só os repasses dos destinatários com valor', () => {
+    const charge = chargeFixture();
+    charge.expectedShares.push({
+      account: 'indicador',
+      role: 'recipient',
+      grossCents: 0,
+      feeCents: 0,
+      netCents: 0,
+    });
+
+    expect(requestedTransfers(charge)).toEqual([{ account: 'parceiro', amountCents: 40_000 }]);
   });
 });
 

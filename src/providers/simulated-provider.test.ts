@@ -1,16 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { ProviderError, type ProviderErrorCode } from './errors.js';
 import { SimulatedProvider } from './simulated-provider.js';
-import type { ProviderChargeRequest } from './types.js';
+import type { ProviderChargeRef, ProviderChargeRequest } from './types.js';
 
 const request: ProviderChargeRequest = {
   idempotencyKey: 'cobranca-1',
+  reference: 'DOCLINE-1',
   beneficiary: 'vendedor',
+  method: 'boleto',
   amountCents: 100_000,
   dueDate: '2026-11-10',
   payer: { name: 'Maria Silva', document: '529.982.247-25' },
   transfers: [{ account: 'parceiro', amountCents: 40_000 }],
 };
+
+function ref(id: string): ProviderChargeRef {
+  return { id, method: 'boleto', amountCents: 100_000, transfers: request.transfers };
+}
 
 async function rejectionCode(promise: Promise<unknown>): Promise<ProviderErrorCode> {
   try {
@@ -33,19 +39,35 @@ function errorCode(action: () => unknown): ProviderErrorCode {
 }
 
 describe('SimulatedProvider', () => {
-  it('cria a cobrança com linha digitável e Pix de mentira', async () => {
+  it('cria o boleto com link, linha digitável e Pix de mentira', async () => {
     const charge = await new SimulatedProvider().createCharge(request);
 
     expect(charge).toEqual({
       id: 'sim_ch_000001',
       status: 'pending',
-      beneficiary: 'vendedor',
-      amountCents: 100_000,
-      dueDate: '2026-11-10',
-      transfers: [{ account: 'parceiro', amountCents: 40_000 }],
+      providerStatus: { code: 'pending', label: 'Pendente' },
+      paymentUrl: 'https://simulado.docpay.invalid/boleto/sim_ch_000001',
       digitableLine: expect.stringMatching(/^999\d{44}$/),
       pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
     });
+  });
+
+  it('cria o Pix só com o copia e cola', async () => {
+    const charge = await new SimulatedProvider().createCharge({ ...request, method: 'pix' });
+
+    expect(charge).toEqual({
+      id: 'sim_ch_000001',
+      status: 'pending',
+      providerStatus: { code: 'pending', label: 'Pendente' },
+      pixCopyPaste: 'SIMULADO-PIX-sim_ch_000001',
+    });
+  });
+
+  it('guarda o pedido, para os testes conferirem os repasses', async () => {
+    const provider = new SimulatedProvider();
+    const { id } = await provider.createCharge(request);
+
+    expect(provider.requestFor(id)).toEqual(request);
   });
 
   it('com a mesma chave e o mesmo pedido, devolve a mesma cobrança', async () => {
@@ -54,7 +76,7 @@ describe('SimulatedProvider', () => {
     const again = await provider.createCharge({ ...request, payer: { ...request.payer } });
 
     expect(again).toEqual(first);
-    expect(await rejectionCode(provider.getCharge('sim_ch_000002'))).toBe('CHARGE_NOT_FOUND');
+    expect(await rejectionCode(provider.getCharge(ref('sim_ch_000002')))).toBe('CHARGE_NOT_FOUND');
   });
 
   it('recusa a mesma chave com outro pedido', async () => {
@@ -83,10 +105,11 @@ describe('SimulatedProvider', () => {
   it('no pagamento, executa os repasses pedidos e cobra a tarifa do meio usado', async () => {
     const provider = new SimulatedProvider({ now: () => new Date('2026-11-05T15:00:00Z') });
     const { id } = await provider.createCharge(request);
-    provider.pay(id, { method: 'boleto' });
+    provider.pay(id);
 
-    const paid = await provider.getCharge(id);
+    const paid = await provider.getCharge(ref(id));
     expect(paid.status).toBe('paid');
+    expect(paid.providerStatus).toEqual({ code: 'paid', label: 'Pago' });
     expect(paid.payment).toEqual({
       paidAt: '2026-11-05T15:00:00.000Z',
       method: 'boleto',
@@ -96,27 +119,56 @@ describe('SimulatedProvider', () => {
     });
   });
 
+  it('o boleto também pode ser pago pelo QR do Pix, com a tarifa do Pix', async () => {
+    const provider = new SimulatedProvider();
+    const { id } = await provider.createCharge(request);
+    provider.pay(id, { method: 'pix' });
+
+    expect((await provider.getCharge(ref(id))).payment).toMatchObject({ method: 'pix', feeCents: 240 });
+  });
+
   it('usa as tarifas configuradas', async () => {
     const provider = new SimulatedProvider({ fees: { boleto: 199, pix: 199 } });
     const { id } = await provider.createCharge(request);
     provider.pay(id);
 
-    expect((await provider.getCharge(id)).payment?.feeCents).toBe(199);
+    expect((await provider.getCharge(ref(id))).payment?.feeCents).toBe(199);
   });
 
-  it('o aviso de pagamento só diz qual cobrança mudou', async () => {
+  it('dá baixa na cobrança vencida', async () => {
+    const provider = new SimulatedProvider();
+    const { id } = await provider.createCharge(request);
+    provider.expire(id);
+
+    const expired = await provider.getCharge(ref(id));
+    expect(expired.status).toBe('expired');
+    expect(expired.providerStatus).toEqual({ code: 'expired', label: 'Baixado' });
+    expect(errorCode(() => provider.expire(id))).toBe('INVALID_REQUEST');
+  });
+
+  it('o aviso só diz qual cobrança mudou', async () => {
     const provider = new SimulatedProvider();
     const { id } = await provider.createCharge(request);
     const body = provider.pay(id);
 
     expect(JSON.parse(body)).toEqual({ id: 'sim_evt_000001', type: 'charge.updated', chargeId: id });
-    expect(provider.parseWebhook(body)).toEqual({ eventId: 'sim_evt_000001', chargeId: id });
+    expect(provider.parseWebhook({ body, query: {} })).toEqual({ chargeIds: [id] });
+  });
+
+  it('com chave configurada, recusa aviso sem a chave certa', async () => {
+    const provider = new SimulatedProvider({ webhookKey: 'segredo' });
+    const { id } = await provider.createCharge(request);
+    const body = provider.pay(id);
+
+    expect(errorCode(() => provider.parseWebhook({ body, query: {} }))).toBe('UNAUTHORIZED_WEBHOOK');
+    expect(errorCode(() => provider.parseWebhook({ body, query: { k: 'errada' } }))).toBe('UNAUTHORIZED_WEBHOOK');
+    expect(provider.parseWebhook({ body, query: { k: 'segredo' } })).toEqual({ chargeIds: [id] });
   });
 
   it('recusa aviso em formato inválido', () => {
     const provider = new SimulatedProvider();
-    for (const body of ['não é json', 'null', '[]', '{"id":1,"chargeId":"x"}']) {
-      expect(errorCode(() => provider.parseWebhook(body))).toBe('INVALID_WEBHOOK');
+    for (const body of ['não é json', 'null', '[]', '{"chargeId":1}']) {
+      expect(errorCode(() => provider.parseWebhook({ body, query: {} }))).toBe('INVALID_WEBHOOK');
     }
   });
 
@@ -133,11 +185,8 @@ describe('SimulatedProvider', () => {
   it('devolve cópias: mudar o que voltou não muda a cobrança no parceiro', async () => {
     const provider = new SimulatedProvider();
     const charge = await provider.createCharge(request);
-    charge.transfers[0]!.amountCents = 1;
     charge.status = 'paid';
 
-    const fresh = await provider.getCharge(charge.id);
-    expect(fresh.status).toBe('pending');
-    expect(fresh.transfers).toEqual([{ account: 'parceiro', amountCents: 40_000 }]);
+    expect((await provider.getCharge(ref(charge.id))).status).toBe('pending');
   });
 });

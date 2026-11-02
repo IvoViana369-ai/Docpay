@@ -36,6 +36,8 @@ function chargeFixture(id: string, overrides: Partial<Charge> = {}): Charge {
   return {
     id,
     idempotencyKey: `chave-${id}`,
+    reference: `DOCLINE-${id}`,
+    method: 'boleto',
     status: 'pending',
     amountCents: 100_000,
     dueDate: '2026-11-10',
@@ -47,6 +49,7 @@ function chargeFixture(id: string, overrides: Partial<Charge> = {}): Charge {
     ],
     provider: 'simulated',
     providerChargeId: `sim_${id}`,
+    providerStatus: { code: 'pending', label: 'Pendente' },
     digitableLine: '999',
     pixCopyPaste: `SIMULADO-PIX-sim_${id}`,
     divergences: [],
@@ -125,6 +128,7 @@ describe.each(storages)('repositórios, dados $name', (storage) => {
     await charges.insert(chargeFixture('ch_b', { createdAt: '2026-10-29T12:00:01.000Z' }));
     await charges.insert(chargeFixture('ch_a', { createdAt: '2026-10-29T12:00:01.000Z' }));
     await charges.insert(chargeFixture('ch_paga', { status: 'paid', createdAt: '2026-10-29T12:00:00.000Z' }));
+    await charges.insert(chargeFixture('ch_vencida', { status: 'expired', createdAt: '2026-10-29T12:00:00.000Z' }));
 
     const firstPage = await charges.findPending({ limit: 2 });
     expect(firstPage.map((charge) => charge.id)).toEqual(['ch_a', 'ch_b']);
