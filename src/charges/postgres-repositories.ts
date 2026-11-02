@@ -1,7 +1,7 @@
 import { isoTimestamp } from '../db/sql.js';
 import type { Db } from '../db/types.js';
 import type { ChargeRepository, PendingCursor, ReceivedWebhook, WebhookInbox } from './repositories.js';
-import type { Charge } from './types.js';
+import type { Charge, ChargeStatus } from './types.js';
 
 /**
  * Cobranças em PostgreSQL. A coluna `document` guarda a cobrança inteira; as
@@ -16,8 +16,8 @@ export class PostgresChargeRepository implements ChargeRepository {
 
   async insert(charge: Charge): Promise<boolean> {
     const rows = await this.#db.query(
-      `INSERT INTO charges (id, idempotency_key, provider, provider_charge_id, status, document, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $7)
+      `INSERT INTO charges (id, idempotency_key, provider, provider_charge_id, status, notified_status, document, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $5, $6::jsonb, $7, $7)
        ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING id`,
       [
@@ -71,6 +71,21 @@ export class PostgresChargeRepository implements ChargeRepository {
             LIMIT $1`,
           [limit],
         );
+    return rows.map((row) => row.document);
+  }
+
+  async markNotified(id: string, status: ChargeStatus): Promise<void> {
+    await this.#db.query('UPDATE charges SET notified_status = $2 WHERE id = $1 AND status = $2', [id, status]);
+  }
+
+  async findUnnotified(limit: number): Promise<Charge[]> {
+    const rows = await this.#db.query<{ document: Charge }>(
+      `SELECT document FROM charges
+        WHERE notified_status IS DISTINCT FROM status
+        ORDER BY created_at, id
+        LIMIT $1`,
+      [limit],
+    );
     return rows.map((row) => row.document);
   }
 

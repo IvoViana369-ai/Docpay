@@ -8,6 +8,7 @@ import { SplitError } from '../split/errors.js';
 import type { SplitResult } from '../split/types.js';
 import type { ChargeClaims } from './claims.js';
 import { ChargeError, type ChargeIssue } from './errors.js';
+import type { Notifier } from './notifier.js';
 import type { ChargeRepository, PendingCursor, WebhookInbox } from './repositories.js';
 import { findDivergences, requestedTransfers, settlementTransaction } from './settlement.js';
 import type { Charge, CreateChargeInput } from './types.js';
@@ -31,6 +32,8 @@ export interface ChargeServiceDeps {
   timeZone?: string;
   /** Quantas cobranças a conciliação busca por vez. Padrão: 100. */
   reconciliationPageSize?: number;
+  /** Quem avisar quando o status de uma cobrança muda (ex.: o DocLine). Sem ele, ninguém é avisado. */
+  notifier?: Notifier;
 }
 
 export interface SyncResult {
@@ -56,6 +59,13 @@ export interface ReconciliationReport {
   failed: { chargeId: string; message: string }[];
 }
 
+export interface NotificationReport {
+  /** Cobranças cujo aviso o sistema cliente confirmou agora. */
+  delivered: string[];
+  /** Avisos que falharam, com o motivo. A próxima rodada tenta de novo. */
+  failed: { chargeId: string; message: string }[];
+}
+
 /**
  * O caminho de uma cobrança: emissão no parceiro, aviso de pagamento e baixa
  * no razão. O dinheiro nunca passa pelo DocPay; aqui só se decide quanto vai
@@ -71,6 +81,7 @@ export class ChargeService {
   readonly #newId: () => string;
   readonly #timeZone: string;
   readonly #reconciliationPageSize: number;
+  readonly #notifier: Notifier | undefined;
 
   constructor(deps: ChargeServiceDeps) {
     this.#provider = deps.provider;
@@ -82,6 +93,7 @@ export class ChargeService {
     this.#newId = deps.newId ?? (() => randomUUID());
     this.#timeZone = deps.timeZone ?? DEFAULT_TIME_ZONE;
     this.#reconciliationPageSize = deps.reconciliationPageSize ?? 100;
+    this.#notifier = deps.notifier;
   }
 
   /**
@@ -198,12 +210,14 @@ export class ChargeService {
         payment: { ...remote.payment, ledgerTransactionId: transaction.id },
         divergences: findDivergences(charge, remote.payment),
       });
+      await this.#notify(chargeId);
       return { status: 'settled', chargeId };
     }
 
     // Vencida, cancelada ou recusada: muda o status; nenhum dinheiro se mexeu.
     if (remote.status !== 'pending' && remote.status !== charge.status) {
       await this.#charges.update({ ...charge, status: remote.status, providerStatus: remote.providerStatus });
+      await this.#notify(chargeId);
       return { status: 'updated', chargeId };
     }
 
@@ -265,6 +279,38 @@ export class ChargeService {
       const last = page.at(-1);
       if (!last || page.length < this.#reconciliationPageSize) return report;
       after = { createdAt: last.createdAt, id: last.id };
+    }
+  }
+
+  /**
+   * Manda os avisos que ficaram para trás: cobranças que mudaram de status sem
+   * o sistema cliente confirmar o recebimento. Roda junto com a conciliação.
+   */
+  async deliverPendingNotifications(limit = 100): Promise<NotificationReport> {
+    const report: NotificationReport = { delivered: [], failed: [] };
+    if (!this.#notifier) return report;
+    for (const charge of await this.#charges.findUnnotified(limit)) {
+      try {
+        await this.#notifier.notify(charge);
+        await this.#charges.markNotified(charge.id, charge.status);
+        report.delivered.push(charge.id);
+      } catch (error) {
+        report.failed.push({ chargeId: charge.id, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return report;
+  }
+
+  /** Avisa o sistema cliente na hora. Se falhar, a próxima rodada da conciliação tenta de novo. */
+  async #notify(chargeId: string): Promise<void> {
+    if (!this.#notifier) return;
+    const charge = await this.#charges.findById(chargeId);
+    if (!charge) return;
+    try {
+      await this.#notifier.notify(charge);
+      await this.#charges.markNotified(charge.id, charge.status);
+    } catch {
+      // Fica para deliverPendingNotifications.
     }
   }
 

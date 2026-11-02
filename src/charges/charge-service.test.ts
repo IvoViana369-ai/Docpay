@@ -9,6 +9,7 @@ import { SimulatedProvider } from '../providers/simulated-provider.js';
 import type { ProviderCharge, ProviderChargeRef, ProviderChargeRequest } from '../providers/types.js';
 import { ChargeService, chargeRequestFingerprint } from './charge-service.js';
 import { InMemoryChargeClaims, PostgresChargeClaims, type ChargeClaims } from './claims.js';
+import type { Notifier } from './notifier.js';
 import { ChargeError } from './errors.js';
 import { PostgresChargeRepository, PostgresWebhookInbox } from './postgres-repositories.js';
 import {
@@ -17,7 +18,7 @@ import {
   type ChargeRepository,
   type WebhookInbox,
 } from './repositories.js';
-import type { CreateChargeInput } from './types.js';
+import type { Charge, CreateChargeInput } from './types.js';
 
 const NOW = '2026-10-29T12:00:00.000Z';
 const now = () => new Date(NOW);
@@ -120,7 +121,7 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
     for (const close of opened.splice(0)) await close();
   });
 
-  async function setup(options: { reconciliationPageSize?: number } = {}) {
+  async function setup(options: { reconciliationPageSize?: number; notifier?: Notifier } = {}) {
     const stores = await storage.create();
     opened.push(() => stores.close());
     const provider = new UnstableProvider({ now });
@@ -530,6 +531,63 @@ describe.each(storages)('ChargeService, dados $name', (storage) => {
       const { service } = await setup();
       const error = await chargeRejection(service.sync('ch_999'));
       expect(error.code).toBe('CHARGE_NOT_FOUND');
+    });
+  });
+
+  describe('aviso ao sistema cliente', () => {
+    /** Sistema cliente de mentira: guarda os avisos e pode ficar fora do ar. */
+    class FakeClient implements Notifier {
+      readonly received: string[] = [];
+      offline = false;
+
+      async notify(charge: Charge): Promise<void> {
+        if (this.offline) throw new Error('Sistema cliente fora do ar.');
+        this.received.push(`${charge.id}:${charge.status}`);
+      }
+    }
+
+    it('avisa quando a cobrança é paga ou baixada, uma vez por status', async () => {
+      const client = new FakeClient();
+      const { service, provider } = await setup({ notifier: client });
+      const paid = await service.create(input);
+      const expired = await service.create({ ...input, idempotencyKey: 'fatura-vencida' });
+
+      const webhook = provider.pay(paid.providerChargeId);
+      await service.handleWebhook(webhookOf(webhook));
+      await service.handleWebhook(webhookOf(webhook));
+      await service.handleWebhook(webhookOf(provider.expire(expired.providerChargeId)));
+
+      expect(client.received).toEqual([`${paid.id}:paid`, `${expired.id}:expired`]);
+      expect(await service.deliverPendingNotifications()).toEqual({ delivered: [], failed: [] });
+    });
+
+    it('se o sistema cliente estiver fora do ar, a baixa acontece e o aviso sai depois', async () => {
+      const client = new FakeClient();
+      const { service, provider, ledger } = await setup({ notifier: client });
+      const charge = await service.create(input);
+      client.offline = true;
+
+      expect(await service.handleWebhook(webhookOf(provider.pay(charge.providerChargeId)))).toMatchObject([
+        { status: 'settled' },
+      ]);
+      expect(await ledger.balance(PAYERS)).toBe(-100_000);
+      expect(await service.deliverPendingNotifications()).toEqual({
+        delivered: [],
+        failed: [{ chargeId: charge.id, message: 'Sistema cliente fora do ar.' }],
+      });
+
+      client.offline = false;
+      expect(await service.deliverPendingNotifications()).toEqual({ delivered: [charge.id], failed: [] });
+      expect(await service.deliverPendingNotifications()).toEqual({ delivered: [], failed: [] });
+      expect(client.received).toEqual([`${charge.id}:paid`]);
+    });
+
+    it('sem sistema cliente configurado, não há o que avisar', async () => {
+      const { service, provider } = await setup();
+      const charge = await service.create(input);
+      await service.handleWebhook(webhookOf(provider.pay(charge.providerChargeId)));
+
+      expect(await service.deliverPendingNotifications()).toEqual({ delivered: [], failed: [] });
     });
   });
 

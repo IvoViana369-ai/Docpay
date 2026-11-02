@@ -1,4 +1,4 @@
-import type { Charge } from './types.js';
+import type { Charge, ChargeStatus } from './types.js';
 
 /** Posição numa lista de cobranças em aberto: a última cobrança da página anterior. */
 export interface PendingCursor {
@@ -18,6 +18,10 @@ export interface ChargeRepository {
    * página, passe em `after` a última cobrança da página anterior.
    */
   findPending(options: { limit: number; after?: PendingCursor }): Promise<Charge[]>;
+  /** Registra que o sistema cliente foi avisado deste status. Só vale se a cobrança ainda estiver nele. */
+  markNotified(id: string, status: ChargeStatus): Promise<void>;
+  /** Cobranças cujo status mudou sem o sistema cliente ser avisado, das mais antigas para as mais novas. */
+  findUnnotified(limit: number): Promise<Charge[]>;
 }
 
 export interface ReceivedWebhook {
@@ -36,11 +40,14 @@ export interface WebhookInbox {
 /** Cobranças em memória. Guarda e devolve cópias, como um banco de dados faria. */
 export class InMemoryChargeRepository implements ChargeRepository {
   readonly #charges = new Map<string, Charge>();
+  readonly #notified = new Map<string, ChargeStatus>();
 
   async insert(charge: Charge): Promise<boolean> {
     if (this.#find((stored) => stored.idempotencyKey === charge.idempotencyKey)) return false;
     if (this.#charges.has(charge.id)) throw new Error(`Já existe cobrança com o id ${charge.id}.`);
     this.#charges.set(charge.id, structuredClone(charge));
+    // A emissão responde na hora a quem pediu: o status inicial não precisa de aviso.
+    this.#notified.set(charge.id, charge.status);
     return true;
   }
 
@@ -66,6 +73,18 @@ export class InMemoryChargeRepository implements ChargeRepository {
   async findPending({ limit, after }: { limit: number; after?: PendingCursor }): Promise<Charge[]> {
     return [...this.#charges.values()]
       .filter((charge) => charge.status === 'pending' && (!after || comesAfter(charge, after)))
+      .sort((a, b) => (comesAfter(a, b) ? 1 : comesAfter(b, a) ? -1 : 0))
+      .slice(0, limit)
+      .map((charge) => structuredClone(charge));
+  }
+
+  async markNotified(id: string, status: ChargeStatus): Promise<void> {
+    if (this.#charges.get(id)?.status === status) this.#notified.set(id, status);
+  }
+
+  async findUnnotified(limit: number): Promise<Charge[]> {
+    return [...this.#charges.values()]
+      .filter((charge) => this.#notified.get(charge.id) !== charge.status)
       .sort((a, b) => (comesAfter(a, b) ? 1 : comesAfter(b, a) ? -1 : 0))
       .slice(0, limit)
       .map((charge) => structuredClone(charge));

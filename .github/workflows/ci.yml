@@ -32,6 +32,8 @@ jobs:
       - run: npm ci
       # Checagem de tipos e testes com o PGlite, como na máquina de quem desenvolve.
       - run: npm run check
+      # O mesmo build que o Render faz.
+      - run: npm run build
       # Os mesmos testes contra um servidor PostgreSQL de verdade, com o driver de produção.
       - run: npm test
         env:
