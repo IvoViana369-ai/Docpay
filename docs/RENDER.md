@@ -15,7 +15,10 @@ O DocPay cria as tabelas sozinho ao subir.
 ## 1. Criar os serviços
 
 1. No Render, **New › Blueprint**, escolha o repositório **Docpay** e o ramo `main`.
-2. O Render lê o `render.yaml` e mostra as três partes. Ele pede os valores marcados como `sync: false`. Por enquanto, preencha só os do passo 2 e deixe os da Safe2Pay em branco.
+2. O Render lê o `render.yaml` e mostra as três partes. Ele pede os valores marcados como `sync: false`. Por enquanto, preencha só os do passo 2 e deixe os outros em branco: `DOCPAY_PROVIDER` em branco é o parceiro simulado, e `SAFE2PAY_SANDBOX` em branco é o ambiente de teste.
+3. **Custos:** o Render cobra à parte cada parte do DocPay (o serviço web, o banco e o cron). Confira os planos e os preços na hora de criar. Não use o plano gratuito no serviço web, porque ele dorme depois de um tempo parado e o DocLine esperaria ele acordar. O banco gratuito do Render tem prazo de validade, então também não serve.
+
+O `DOCPAY_PROVIDER` e o `SAFE2PAY_SANDBOX` ficam só no painel, de propósito: assim, uma sincronização do Blueprint nunca desfaz a troca do parceiro ou do ambiente feita por você.
 
 ## 2. Começar com o parceiro simulado (sem dinheiro de verdade)
 
@@ -33,6 +36,17 @@ No serviço **docpay**, em **Environment**:
 No cron **docpay-conciliacao**, repita `DOCPAY_PUBLIC_URL`, `DOCPAY_NOTIFY_URL` e `DOCPAY_NOTIFY_SECRET` com os mesmos valores.
 
 **Conferir:** abra `https://<endereço do docpay>/health`. Deve aparecer `{"ok":true,"provider":"simulated"}`. Se o serviço não subir, o log mostra a lista do que falta configurar.
+
+**No DocLine** (serviço **docline-gestao-comercial**, versão 7.50.0 ou mais nova), em **Environment**:
+
+| Variável | Valor |
+|---|---|
+| `PAGAMENTOS_VIA_DOCPAY` | `1` |
+| `DOCPAY_URL` | o endereço do DocPay (o mesmo do `DOCPAY_PUBLIC_URL`) |
+| `DOCPAY_API_KEY` | a mesma do DocPay |
+| `DOCPAY_NOTIFY_SECRET` | o mesmo do DocPay |
+
+O guia do lado do DocLine, com o roteiro de teste e como voltar atrás, está no `docs/DOCPAY.md` do repositório do DocLine. Com `PAGAMENTOS_VIA_DOCPAY=0`, o DocLine volta a chamar a Safe2Pay direto.
 
 **Atenção:** o parceiro simulado guarda as cobranças na memória. Elas somem quando o serviço reinicia, e o cron não as enxerga. É só para teste.
 

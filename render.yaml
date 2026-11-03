@@ -34,14 +34,15 @@ services:
         sync: false
       - key: DOCPAY_NOTIFY_SECRET
         sync: false
-      # "simulated" (teste, sem dinheiro) ou "safe2pay".
+      # "simulated" (teste, sem dinheiro) ou "safe2pay". Vazio = simulated. Fica só no painel (sync: false),
+      # para uma sincronização do Blueprint nunca desfazer a troca feita lá.
       - key: DOCPAY_PROVIDER
-        value: simulated
+        sync: false
       - key: SAFE2PAY_API_KEY
         sync: false
-      # 1 = ambiente de teste da Safe2Pay; 0 = produção.
+      # 1 = ambiente de teste da Safe2Pay; 0 = produção. Vazio = 1. Também só no painel.
       - key: SAFE2PAY_SANDBOX
-        value: "1"
+        sync: false
       # A conta do DocPay dona do token da Safe2Pay.
       - key: SAFE2PAY_MAIN_ACCOUNT
         value: docline
@@ -75,11 +76,11 @@ services:
       - key: DOCPAY_NOTIFY_SECRET
         sync: false
       - key: DOCPAY_PROVIDER
-        value: simulated
+        sync: false
       - key: SAFE2PAY_API_KEY
         sync: false
       - key: SAFE2PAY_SANDBOX
-        value: "1"
+        sync: false
       - key: SAFE2PAY_MAIN_ACCOUNT
         value: docline
       - key: SAFE2PAY_FEE_BOLETO
