@@ -14,7 +14,7 @@ O DocPay é só software. Ele calcula a divisão, emite as cobranças pela API d
 - [x] API HTTP e aviso assinado ao sistema cliente (`src/server`)
 - [x] Conciliação a cada 30 minutos (cron)
 - [x] Publicação no Render (`render.yaml`, guia em `docs/RENDER.md`)
-- [ ] DocLine ligado ao DocPay: o código está na versão 7.50.0 do DocLine, atrás da chave `PAGAMENTOS_VIA_DOCPAY`; falta aprovar e configurar no Render
+- [ ] DocLine ligado ao DocPay: o código está na versão 7.52.0 do DocLine, atrás da chave `PAGAMENTOS_VIA_DOCPAY`; falta aprovar e configurar no Render
 - [ ] Primeira cobrança de teste na Safe2Pay (sandbox), pelo DocPay
 
 ## Como rodar

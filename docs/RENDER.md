@@ -37,7 +37,7 @@ No cron **docpay-conciliacao**, repita `DOCPAY_PUBLIC_URL`, `DOCPAY_NOTIFY_URL` 
 
 **Conferir:** abra `https://<endereço do docpay>/health`. Deve aparecer `{"ok":true,"provider":"simulated"}`. Se o serviço não subir, o log mostra a lista do que falta configurar.
 
-**No DocLine** (serviço **docline-gestao-comercial**, versão 7.50.0 ou mais nova), em **Environment**:
+**No DocLine** (serviço **docline-gestao-comercial**, versão 7.52.0 ou mais nova), em **Environment**:
 
 | Variável | Valor |
 |---|---|
