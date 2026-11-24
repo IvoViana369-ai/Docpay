@@ -148,7 +148,7 @@ No Render, pelo `render.yaml`: o serviço `docpay`, o banco `docpay-db` e o cron
 - **Saldos.** A conciliação ainda não compara o saldo de cada conta com o saldo no parceiro. Isso depende de registrar os saques e os depósitos das subcontas.
 - **Receita do DocPay.** Mensalidade (caminho seguro) ou parte da cobrança (depende de parecer jurídico sobre a Resolução Conjunta 16/2025).
 - **Plano de contas.** As contas do razão acima são uma proposta e precisam ser validadas pelo contador.
-- **Mais de um sistema usando o DocPay.** Quando entrar um segundo sistema além do DocLine, cada um precisa da própria chave de API, e as chaves de idempotência precisam levar o nome do sistema.
+- **Mais de um sistema usando o DocPay.** Quando entrar um segundo sistema além do DocLine, cada um precisa da própria chave de API, e as chaves de idempotência precisam levar o nome do sistema. O plano está em `docs/plano-varios-clientes.md`.
 - **Documentação da Safe2Pay.** O ambiente onde o DocPay foi escrito não acessa o site da Safe2Pay. O adaptador segue o que o DocLine já validou; vale conferir na primeira cobrança de teste.
 
 ## Tecnologia

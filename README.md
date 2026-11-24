@@ -45,4 +45,5 @@ npm start
 
 - [Arquitetura](docs/arquitetura.md): as peças, o caminho de uma cobrança, a API e as decisões em aberto.
 - [Publicar no Render](docs/RENDER.md): o passo a passo da configuração.
+- [Plano para vários clientes](docs/plano-varios-clientes.md): o que falta para vender o DocPay a outras empresas.
 - [CLAUDE.md](CLAUDE.md): regras do projeto, para pessoas e para o Claude Code.
